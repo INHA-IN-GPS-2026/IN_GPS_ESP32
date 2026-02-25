@@ -1,0 +1,20 @@
+# ESP-IDF build output
+build/
+sdkconfig.old
+sdkconfig.bak
+
+# Managed components (usually re-generated)
+managed_components/
+
+# Python / OS junk
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# CMake/compilation database (optional)
+compile_commands.json
