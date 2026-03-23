@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_mac.h"
 #include "nvs_flash.h"
 #include "esp_sleep.h"
 
@@ -32,10 +34,32 @@ extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
 
 static const char *TAG = "NIMBLE_ADV";
 
-// menufacture Data
+/* NTC 서미스터 설정 (VCC → NTC → ADC → R_pulldown → GND) */
+#define THERMISTOR_R_PULLDOWN   10000.0f
+#define THERMISTOR_R0           10000.0f
+#define THERMISTOR_T0           298.15f     // 25°C in Kelvin
+#define THERMISTOR_BETA         3981.0f
+#define ADC_REF_VOLTAGE_MV      3300
+#define ADC_MAX_RAW             4095.0f
+
+static int16_t raw_to_temp_x100(uint16_t raw)
+{
+    float v_adc = (float)raw / ADC_MAX_RAW * (float)ADC_REF_VOLTAGE_MV;
+    if (v_adc <= 0.0f) v_adc = 1.0f;
+
+    float r_ntc = THERMISTOR_R_PULLDOWN * ((float)ADC_REF_VOLTAGE_MV - v_adc) / v_adc;
+    if (r_ntc <= 0.0f) r_ntc = 1.0f;
+
+    float temp_k = 1.0f / (1.0f / THERMISTOR_T0 +
+                            logf(r_ntc / THERMISTOR_R0) / THERMISTOR_BETA);
+    float temp_c = temp_k - 273.15f;
+    return (int16_t)(temp_c * 100.0f);  // 예: 25.50°C → 2550
+}
+
+// manufacturer Data
 static uint8_t mfg_data[] = {
     0x34, 0x12,   // company ID (LE)
-    0x00, 0x00,   // adc_raw (LE)
+    0x00, 0x00,   // adc_raw low/high byte (runtime update)
     0x00          // reason
 };
 
@@ -68,20 +92,6 @@ static void start_ulp_adc_gpio4(void)
     ESP_ERROR_CHECK(ulp_riscv_run());
 }
 
-// mfg-data input raw data(in RTC MEMORY)
-static void update_mfg_from_ulp(void)
-{
-    int16_t raw = ulp_shared.rpt.last_raw[0];
-
-    if (raw < 0) raw = 0;
-    if (raw > 4095) raw = 4095;
-
-    uint16_t u = (uint16_t)raw;
-    mfg_data[2] = (uint8_t)(u & 0xFF);
-    mfg_data[3] = (uint8_t)((u >> 8) & 0xFF);
-    mfg_data[4] = 0x00;
-}
-
 //GAP-Event
 static int gap_event_cb(struct ble_gap_event *event, void *arg)
 {
@@ -95,7 +105,11 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
 // Advertising
 static void start_advertising_once(void)
 {
-    update_mfg_from_ulp();
+    // ULP ADC raw → 온도 변환 후 mfg_data 업데이트
+    uint16_t adc_raw = (uint16_t)ulp_shared.rpt.last_raw[0];
+    int16_t temp_x100 = raw_to_temp_x100(adc_raw);   // 예: 25.50°C → 2550
+    mfg_data[2] = (uint8_t)((uint16_t)temp_x100 & 0xFF);
+    mfg_data[3] = (uint8_t)((uint16_t)temp_x100 >> 8);
 
     struct ble_gap_adv_params adv_params;
     memset(&adv_params, 0, sizeof(adv_params));
@@ -136,13 +150,8 @@ static void start_advertising_once(void)
         return;
     }
 
-    {
-        uint16_t adc = (uint16_t)mfg_data[2] | ((uint16_t)mfg_data[3] << 8);
-        ESP_LOGI(TAG, "ADV started len=%u, sample=%lu, raw=%u",
-                 (unsigned)adv_len,
-                 (unsigned long)ulp_shared.rpt.sample_counter,
-                 (unsigned)adc);
-    }
+    ESP_LOGI(TAG, "ADV started len=%u, temp=%.2f°C (raw=%u)",
+             (unsigned)adv_len, temp_x100 / 100.0f, (unsigned)adc_raw);
 }
 
 //5s 0.5s advertisement
@@ -191,6 +200,10 @@ void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+    // Custom BLE MAC address (nimble_port_init 전에 설정)
+    uint8_t custom_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFD}; // BLE MAC = AA:BB:CC:DD:EE:FF (base+2)
+    ESP_ERROR_CHECK(esp_base_mac_addr_set(custom_mac));
+
     ESP_LOGI(TAG, "Start ULP ADC (GPIO4=ADC1_CH3)...");
     start_ulp_adc_gpio4();
 
