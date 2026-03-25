@@ -16,5 +16,8 @@ Thumbs.db
 .vscode/
 .idea/
 
+#claude
+.claude
+
 # CMake/compilation database (optional)
 compile_commands.json

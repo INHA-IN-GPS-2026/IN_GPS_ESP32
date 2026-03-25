@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "app_main.c"
     INCLUDE_DIRS "."
-    REQUIRES ulp nvs_flash bt
+    REQUIRES ulp nvs_flash bt esp_adc hal
 )
 
 target_link_libraries(${COMPONENT_LIB} INTERFACE m)

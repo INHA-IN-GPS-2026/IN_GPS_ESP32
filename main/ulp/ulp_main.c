@@ -15,8 +15,11 @@ int main(void)
         shared.rpt.last_raw[0] = 0;
     }
 
-    uint32_t raw = ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_3);
-    shared.rpt.last_raw[0] = (int16_t)raw;
+    shared.rpt.last_raw[0]  = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_3); // GPIO4
+    shared.rpt.last_raw[1]  = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_4); // GPIO5
+    shared.rpt.last_raw[2]  = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_5); // GPIO6
+    shared.rpt.extra_raw[0] = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_6); // GPIO7
+    shared.rpt.extra_raw[1] = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_7); // GPIO8
     shared.rpt.sample_counter++;
 
     ulp_riscv_halt();

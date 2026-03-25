@@ -16,6 +16,7 @@
 #include "ulp_riscv.h"
 #include "ulp_adc.h"
 #include "ulp_shared.h"
+#include "soc/sens_struct.h"
 
 // ---- NimBLE ----
 #include "nimble/nimble_port.h"
@@ -34,11 +35,44 @@ extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
 
 static const char *TAG = "NIMBLE_ADV";
 
+/* ADXL335 가속도센서 캘리브레이션 (3.3V 공급, 12-bit ADC)
+ *
+ * ── 캘리브레이션 방법 ──
+ * 1) 보드를 수평으로 놓고 로그에서 raw_x, raw_y, raw_z 기록 → 각각 zero_x, zero_y, zero_z
+ * 2) 보드를 X축이 위를 향하도록 세우고 raw_x 기록 → sens_x = raw_x_up - zero_x
+ *    (Y, Z도 동일하게)
+ * 3) 아래 6개 값을 측정한 값으로 교체 후 재빌드
+ *
+ * 현재값은 데이터시트 기반 초기 추정값 */
+#define ADXL335_ZERO_X   1920.01f
+#define ADXL335_ZERO_Y   1860.66f
+#define ADXL335_ZERO_Z   1963.66f
+#define ADXL335_SENS_X    406.845f
+#define ADXL335_SENS_Y    407.095f
+#define ADXL335_SENS_Z    399.405f
+
+static void raw_to_accel_angles(int16_t rx, int16_t ry, int16_t rz,
+                                 int16_t *ax100, int16_t *ay100, int16_t *az100)
+{
+    float gx = ((float)rx - ADXL335_ZERO_X) / ADXL335_SENS_X;
+    float gy = ((float)ry - ADXL335_ZERO_Y) / ADXL335_SENS_Y;
+    float gz = ((float)rz - ADXL335_ZERO_Z) / ADXL335_SENS_Z;
+
+    // 각 축이 수평면과 이루는 각도 (-90° ~ +90°)
+    float angle_x = atan2f(gx, sqrtf(gy*gy + gz*gz)) * (180.0f / (float)M_PI);
+    float angle_y = atan2f(gy, sqrtf(gx*gx + gz*gz)) * (180.0f / (float)M_PI);
+    float angle_z = atan2f(gz, sqrtf(gx*gx + gy*gy)) * (180.0f / (float)M_PI);
+
+    *ax100 = (int16_t)(angle_x * 100.0f);  // 예: 45.23° → 4523
+    *ay100 = (int16_t)(angle_y * 100.0f);
+    *az100 = (int16_t)(angle_z * 100.0f);
+}
+
 /* NTC 서미스터 설정 (VCC → NTC → ADC → R_pulldown → GND) */
 #define THERMISTOR_R_PULLDOWN   10000.0f
 #define THERMISTOR_R0           10000.0f
 #define THERMISTOR_T0           298.15f     // 25°C in Kelvin
-#define THERMISTOR_BETA         3981.0f
+#define THERMISTOR_BETA         3981.0f //Beta 데이터 시트 기준 3981 값
 #define ADC_REF_VOLTAGE_MV      3300
 #define ADC_MAX_RAW             4095.0f
 
@@ -59,7 +93,11 @@ static int16_t raw_to_temp_x100(uint16_t raw)
 // manufacturer Data
 static uint8_t mfg_data[] = {
     0x34, 0x12,   // company ID (LE)
-    0x00, 0x00,   // adc_raw low/high byte (runtime update)
+    0x00, 0x00,   // temp1 (GPIO4) x100, int16 LE
+    0x00, 0x00,   // temp2 (GPIO5) x100, int16 LE
+    0x00, 0x00,   // angle_x (GPIO6) x100, int16 LE  예: 4523 = 45.23°
+    0x00, 0x00,   // angle_y (GPIO7) x100, int16 LE
+    0x00, 0x00,   // angle_z (GPIO8) x100, int16 LE
     0x00          // reason
 };
 
@@ -78,8 +116,15 @@ static void start_ulp_adc_gpio4(void)
         .width    = ADC_BITWIDTH_12,
         .ulp_mode = ADC_ULP_MODE_RISCV,
     };
-
     ESP_ERROR_CHECK(ulp_adc_init(&adc_config));
+
+    // CH4~CH7(GPIO5~8): ulp_adc_init은 한 번만 호출 가능하므로 SENS 레지스터 직접 설정
+    // ADC_ATTEN_DB_12 = 3, 각 채널 bits [ch*2+1 : ch*2] in SAR_ATTEN1
+    uint32_t atten = SENS.sar_atten1;
+    for (int ch = ADC_CHANNEL_4; ch <= ADC_CHANNEL_7; ch++) {
+        atten = (atten & ~(0x3U << (ch * 2))) | (3U << (ch * 2));
+    }
+    SENS.sar_atten1 = atten;
 
     ESP_ERROR_CHECK(ulp_riscv_load_binary(
         ulp_main_bin_start,
@@ -106,10 +151,30 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
 static void start_advertising_once(void)
 {
     // ULP ADC raw → 온도 변환 후 mfg_data 업데이트
-    uint16_t adc_raw = (uint16_t)ulp_shared.rpt.last_raw[0];
-    int16_t temp_x100 = raw_to_temp_x100(adc_raw);   // 예: 25.50°C → 2550
-    mfg_data[2] = (uint8_t)((uint16_t)temp_x100 & 0xFF);
-    mfg_data[3] = (uint8_t)((uint16_t)temp_x100 >> 8);
+    int16_t temp1_x100 = raw_to_temp_x100((uint16_t)ulp_shared.rpt.last_raw[0]); // GPIO4
+    int16_t temp2_x100 = raw_to_temp_x100((uint16_t)ulp_shared.rpt.last_raw[1]); // GPIO5
+    // ADXL335 raw 읽기
+    int16_t raw_x = ulp_shared.rpt.last_raw[2];   // GPIO6
+    int16_t raw_y = ulp_shared.rpt.extra_raw[0];  // GPIO7
+    int16_t raw_z = ulp_shared.rpt.extra_raw[1];  // GPIO8
+
+    // 캘리브레이션용 raw 로그 (캘리브레이션 완료 후 제거 가능)
+    ESP_LOGI(TAG, "ACCEL raw  X=%d Y=%d Z=%d", raw_x, raw_y, raw_z);
+
+    // raw → 각도 변환
+    int16_t angle_x, angle_y, angle_z;
+    raw_to_accel_angles(raw_x, raw_y, raw_z, &angle_x, &angle_y, &angle_z);
+
+    mfg_data[2]  = (uint8_t)((uint16_t)temp1_x100 & 0xFF);
+    mfg_data[3]  = (uint8_t)((uint16_t)temp1_x100 >> 8);
+    mfg_data[4]  = (uint8_t)((uint16_t)temp2_x100 & 0xFF);
+    mfg_data[5]  = (uint8_t)((uint16_t)temp2_x100 >> 8);
+    mfg_data[6]  = (uint8_t)((uint16_t)angle_x & 0xFF);
+    mfg_data[7]  = (uint8_t)((uint16_t)angle_x >> 8);
+    mfg_data[8]  = (uint8_t)((uint16_t)angle_y & 0xFF);
+    mfg_data[9]  = (uint8_t)((uint16_t)angle_y >> 8);
+    mfg_data[10] = (uint8_t)((uint16_t)angle_z & 0xFF);
+    mfg_data[11] = (uint8_t)((uint16_t)angle_z >> 8);
 
     struct ble_gap_adv_params adv_params;
     memset(&adv_params, 0, sizeof(adv_params));
@@ -150,8 +215,9 @@ static void start_advertising_once(void)
         return;
     }
 
-    ESP_LOGI(TAG, "ADV started len=%u, temp=%.2f°C (raw=%u)",
-             (unsigned)adv_len, temp_x100 / 100.0f, (unsigned)adc_raw);
+    ESP_LOGI(TAG, "ADV started len=%u, temp1=%.2f°C temp2=%.2f°C angle X=%.2f° Y=%.2f° Z=%.2f°",
+             (unsigned)adv_len, temp1_x100 / 100.0f, temp2_x100 / 100.0f,
+             angle_x / 100.0f, angle_y / 100.0f, angle_z / 100.0f);
 }
 
 //5s 0.5s advertisement

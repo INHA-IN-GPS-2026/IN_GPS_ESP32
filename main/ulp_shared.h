@@ -43,7 +43,8 @@ typedef struct {
     uint8_t  last_event_sensor_id;
     uint8_t  last_event_type;
     uint16_t last_score;
-    int16_t  last_raw[MAX_AXES];
+    int16_t  last_raw[MAX_AXES];   // [0]=GPIO4 [1]=GPIO5 [2]=GPIO6
+    int16_t  extra_raw[2];         // [0]=GPIO7 [1]=GPIO8
     uint32_t sample_counter;
 } ulp_report_t;
 
