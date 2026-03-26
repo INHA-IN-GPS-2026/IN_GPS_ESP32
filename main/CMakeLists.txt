@@ -1,5 +1,9 @@
 idf_component_register(
-    SRCS "app_main.c"
+    SRCS
+        "app_main.c"
+        "ble/ble_adv.c"
+        "sensor/sensor.c"
+        "ulp/ulp_init.c"
     INCLUDE_DIRS "."
     REQUIRES ulp nvs_flash bt esp_adc hal
 )
