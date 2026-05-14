@@ -14,6 +14,8 @@
 #include "sensor/sensor.h"
 #include "ulp_shared.h"
 
+#define PIN_RGB_LED  GPIO_NUM_48
+
 static const char *TAG = "BLE_ADV";
 
 // [0..1] company ID (LE), [2..11] sensor data, [12] reason

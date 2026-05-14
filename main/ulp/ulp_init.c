@@ -36,6 +36,6 @@ void start_ulp_adc_gpio4(void)
         (size_t)(ulp_main_bin_end - ulp_main_bin_start)
     ));
 
-    ESP_ERROR_CHECK(ulp_set_wakeup_period(0, 200000)); // 200ms
+    ESP_ERROR_CHECK(ulp_set_wakeup_period(0, 2000000)); // 2000ms
     ESP_ERROR_CHECK(ulp_riscv_run());
 }

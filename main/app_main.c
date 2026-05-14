@@ -1,6 +1,10 @@
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_mac.h"
 #include "nvs_flash.h"
+#include "led_strip.h"
+
+#define PIN_RGB_LED  48
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -44,6 +48,26 @@ void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+    // 배포 시 로그 끄기 (UART TX LED 소등 + 전류 절감)
+    esp_log_level_set("*", ESP_LOG_NONE);
+
+    // RGB LED(GPIO48) 끄기 - WS2812B는 led_strip으로 RGB(0,0,0) 전송해야 꺼짐
+    led_strip_handle_t led_strip;
+    led_strip_config_t strip_cfg = {
+        .strip_gpio_num = PIN_RGB_LED,
+        .max_leds = 1,
+    };
+    led_strip_rmt_config_t rmt_cfg = {
+        .resolution_hz = 10 * 1000 * 1000,
+    };
+    if (led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &led_strip) == ESP_OK) {
+        led_strip_clear(led_strip);
+    }
+
+    // Custom BLE MAC address (nimble_port_init 전에 설정)
+    uint8_t custom_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFD}; // BLE MAC = AA:BB:CC:DD:EE:FF (base+2)
+    ESP_ERROR_CHECK(esp_base_mac_addr_set(custom_mac));
 
     ESP_LOGI(TAG, "Start ULP ADC (GPIO4=ADC1_CH3)...");
     start_ulp_adc_gpio4();

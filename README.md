@@ -78,3 +78,5 @@ idf.py -p (PORT) flash monitor
 
 - Gateway는 BLE 스캔 시 Device Name `IN_GPS` + Company ID `0x1234` 로 1차 필터링
 - 이후 BLE Source MAC을 화이트리스트에 자동 등록하여 기기별 구분
+
+
