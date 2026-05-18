@@ -5,7 +5,7 @@ idf_component_register(
         "sensor/sensor.c"
         "ulp/ulp_init.c"
     INCLUDE_DIRS "."
-    REQUIRES ulp nvs_flash bt esp_adc hal led_strip
+    REQUIRES ulp nvs_flash bt esp_adc hal led_strip esp_pm esp_hw_support
 )
 
 target_link_libraries(${COMPONENT_LIB} INTERFACE m)
