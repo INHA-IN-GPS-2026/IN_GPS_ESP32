@@ -10,6 +10,10 @@
 #define ADXL335_SENS_Y    407.095f
 #define ADXL335_SENS_Z    399.405f
 
+
+//ADXL335 가속도 센서 캘리브레이션 (3.3V 공급, 12-bit ADC)
+// 전달 사항 PCB 기판 뜨고 ADXL 방향이 정방향인지 역방향인지 어떤 방향인지 확인하고 계산 필요
+
 /* NTC 서미스터 (VCC → NTC → ADC → R_pulldown → GND) */
 #define THERMISTOR_R_PULLDOWN   10000.0f
 #define THERMISTOR_R0           10000.0f
@@ -17,6 +21,7 @@
 #define THERMISTOR_BETA         3950.0f
 #define ADC_REF_VOLTAGE_MV      3300
 #define ADC_MAX_RAW             4095.0f
+
 
 /**
  * @brief 누적 sum_sq와 샘플 수로부터 RMS 진동을 mg 단위로 변환.

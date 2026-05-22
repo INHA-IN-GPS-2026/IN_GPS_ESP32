@@ -119,7 +119,7 @@ void app_main(void)
     /* 동적 zero 캘리브레이션: 3초 동안 정지 상태 raw 평균을 모아 zero 값으로 설정.
        이 동안엔 sum_sq 누적이 멈춰 RMS=0으로 광고되지만, BLE 첫 광고가 이 이후에
        시작되므로 사실상 노출되지 않는다. */
-    const uint32_t CAL_MS = 3000;
+    const uint32_t CAL_MS = 10000;
     ESP_LOGI(TAG, "Calibrating ADXL zero (hold device still for %ums)...", (unsigned)CAL_MS);
     vTaskDelay(pdMS_TO_TICKS(CAL_MS));
 

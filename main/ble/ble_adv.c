@@ -18,9 +18,11 @@ static const char *TAG = "BLE_ADV";
 
 extern volatile ulp_shared_t ulp_shared;
 
+/* STM32 게이트웨이가 이 ESP를 구분하는 device ID (esp_test 고정값). */
+#define ESP_DEVICE_ID  0x01
+
 /*
- * Manufacturer Specific Data (13바이트).
- * ESP_DEVICE_ID는 ble_adv.h의 ESP32_NUM에서 파생.
+ * Manufacturer Specific Data (13바이트)
  *   [0..1]   company ID (LE) = 0x1234
  *   [2..3]   temp1   (°C × 100, int16 LE)   GPIO4 NTC
  *   [4..5]   temp2   (°C × 100, int16 LE)   GPIO5 NTC
@@ -86,10 +88,15 @@ static void build_mfg_data(void)
     mfg_data[10] = (uint8_t)(rms_z_mg & 0xFF);
     mfg_data[11] = (uint8_t)(rms_z_mg >> 8);
 
-    ESP_LOGI(TAG, "ADV  T1=%.2f T2=%.2f C  RMS X=%u Y=%u Z=%u mg | raw X=%d Y=%d Z=%d",
+    ESP_LOGI(TAG, "ADV  T1=%.2f T2=%.2f C  RMS X=%u Y=%u Z=%u mg device_id = %u",
              temp1 / 100.0f, temp2 / 100.0f,
-             rms_x_mg, rms_y_mg, rms_z_mg,
-             ulp_shared.last_raw_x, ulp_shared.last_raw_y, ulp_shared.last_raw_z);
+             rms_x_mg, rms_y_mg, rms_z_mg, ESP_DEVICE_ID);
+    ESP_LOGI(TAG, "raw: x=%d y=%d z=%d  zero=(%d,%d,%d)  dx=%d dy=%d dz=%d",
+             ulp_shared.last_raw_x, ulp_shared.last_raw_y, ulp_shared.last_raw_z,
+             ulp_shared.zero_x, ulp_shared.zero_y, ulp_shared.zero_z,
+             ulp_shared.last_raw_x - ulp_shared.zero_x,
+             ulp_shared.last_raw_y - ulp_shared.zero_y,
+             ulp_shared.last_raw_z - ulp_shared.zero_z);
 }
 
 /* mfg_data → BLE advertising payload (adv_data 버퍼)로 인코딩 */

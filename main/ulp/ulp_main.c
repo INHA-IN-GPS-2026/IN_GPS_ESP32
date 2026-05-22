@@ -27,13 +27,13 @@ int main(void)
     (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_4);
     shared.last_raw_ntc2 = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_4);
 
-    /* ADXL335: CH5=GPIO6 (X), CH6=GPIO7 (Y), CH7=GPIO8 (Z) */
+    /* ADXL335: CH5=GPIO6 (X), CH6=GPIO7 (Y), CH8=GPIO9 (Z, GPIO8 회피) */
     (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_5);
     int16_t rx = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_5);
     (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_6);
     int16_t ry = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_6);
-    (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_7);
-    int16_t rz = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_7);
+    (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_8);
+    int16_t rz = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_8);
 
     shared.last_raw_x = rx;
     shared.last_raw_y = ry;
