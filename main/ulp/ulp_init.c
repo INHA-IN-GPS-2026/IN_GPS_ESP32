@@ -22,20 +22,20 @@ void start_ulp_adc_gpio4(void)
     /* 진동 누적 동안에도 RTC 도메인은 항상 켜 둠 */
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
-    /* CH3 (GPIO4 / NTC1) → ULP RISC-V ADC unit 초기화 */
+    /* HW 핀맵(스키매틱): TH1=GPIO3=CH2, TH2=GPIO4=CH3, ADXL X/Y/Z=GPIO5/6/7=CH4/5/6.
+       CH2 (GPIO3 / NTC1) → ULP RISC-V ADC unit 초기화 */
     ulp_adc_cfg_t adc_config = {
         .adc_n    = ADC_UNIT_1,
-        .channel  = ADC_CHANNEL_3,
+        .channel  = ADC_CHANNEL_2,
         .atten    = ADC_ATTEN_DB_12,
         .width    = ADC_BITWIDTH_12,
         .ulp_mode = ADC_ULP_MODE_RISCV,
     };
     ESP_ERROR_CHECK(ulp_adc_init(&adc_config));
 
-    /* CH4 (NTC2), CH5~6 (ADXL X/Y), CH8 (ADXL Z, GPIO9) attenuation DB_12 (필드값=3).
-       CH7(GPIO8)은 보드 회로가 GND로 끌어내려서 사용 안 함. */
+    /* CH3 (NTC2), CH4~6 (ADXL X/Y/Z) attenuation DB_12 (필드값=3) */
     uint32_t atten = SENS.sar_atten1;
-    for (int ch = ADC_CHANNEL_4; ch <= ADC_CHANNEL_8; ch++) {
+    for (int ch = ADC_CHANNEL_3; ch <= ADC_CHANNEL_6; ch++) {
         atten = (atten & ~(0x3U << (ch * 2))) | (3U << (ch * 2));
     }
     SENS.sar_atten1 = atten;
@@ -57,7 +57,9 @@ void start_ulp_adc_gpio4(void)
     ulp_shared.sum_sq_z    = 0;
     ulp_shared.sample_count = 0;
 
-    /* 부팅 시 calibration 모드로 진입. app_main이 3s 후 zero 박고 0으로 클리어. */
+    /* 동적 zero 캘리브레이션 활성화: cal_phase=1로 켜야 ULP가 첫 N초간 sum_raw를
+       누적한다. 이걸 안 켜면(기존 버그) zero가 0으로 남아 dx=raw가 되고, 정지
+       상태에서도 중력 1g(특히 Z축)가 RMS에 통째로 들어가 진동값이 최대로 뜬다. */
     ulp_shared.sum_raw_x   = 0;
     ulp_shared.sum_raw_y   = 0;
     ulp_shared.sum_raw_z   = 0;

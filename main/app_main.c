@@ -3,6 +3,7 @@
 #include "esp_mac.h"
 #include "esp_pm.h"
 #include "esp_sleep.h"
+#include "esp_timer.h"
 #include <stdio.h>
 #include "nvs_flash.h"
 #include "led_strip.h"
@@ -66,6 +67,49 @@ static void pm_diag_task(void *arg)
     vTaskDelete(NULL);
 }
 
+// #if ADXL_RAW_CAPTURE
+// /* 진단용 raw 스트리밍: ULP 링버퍼를 드레인해 UART로 CSV(x,y,z, counts @200Hz)를
+//    흘린다. CSV 오염을 막으려 캡처 동안 로그레벨을 ERROR로 내리고, 끝나면 복원.
+//    BLE init 전에 호출하면 TX 노이즈 없는 "ADC 베이스라인"을 얻는다. nimble init
+//    뒤로 옮기면 BLE 광고 ON/OFF가 노이즈에 주는 영향을 같은 방식으로 볼 수 있다. */
+// static void adxl_raw_capture(uint32_t seconds)
+// {
+//     esp_log_level_set("*", ESP_LOG_ERROR);
+
+//     uint32_t tail   = ulp_shared.ring_head;   /* 호출 시점부터 캡처 */
+//     int64_t  t0     = esp_timer_get_time();
+//     int64_t  t_end  = t0 + (int64_t)seconds * 1000000;
+//     uint32_t n      = 0;
+
+//     printf("\n# ADXL_RAW_CAPTURE BEGIN cols=x,y,z units=counts fs=200\n");
+//     while (esp_timer_get_time() < t_end) {
+//         uint32_t head = ulp_shared.ring_head;
+//         /* 오버런(미드레인 덮어쓰기) 시 최신 RAW_RING_LEN 구간으로 점프 */
+//         if ((uint32_t)(head - tail) > RAW_RING_LEN) {
+//             tail = head - RAW_RING_LEN;
+//         }
+//         while ((int32_t)(head - tail) > 0) {
+//             uint32_t i = tail & RAW_RING_MASK;
+//             printf("%d,%d,%d\n",
+//                    ulp_shared.ring_x[i], ulp_shared.ring_y[i], ulp_shared.ring_z[i]);
+//             tail++;
+//             n++;
+//             head = ulp_shared.ring_head;
+//             if ((uint32_t)(head - tail) > RAW_RING_LEN) {
+//                 tail = head - RAW_RING_LEN;
+//             }
+//         }
+//         vTaskDelay(pdMS_TO_TICKS(20));   /* ~4샘플마다 드레인 */
+//     }
+//     int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
+//     /* measured_fs ≈ n*1000/dt_ms. float printf 회피 위해 정수로 노출. */
+//     printf("# ADXL_RAW_CAPTURE END n=%u elapsed_ms=%lld (fs=n*1000/elapsed_ms)\n",
+//            (unsigned)n, (long long)dt_ms);
+
+//     esp_log_level_set("*", ESP_LOG_INFO);
+// }
+// #endif
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -116,7 +160,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Start ULP ADXL vibration sampler (200 Hz)...");
     start_ulp_adc_gpio4();
 
-    /* 동적 zero 캘리브레이션: 3초 동안 정지 상태 raw 평균을 모아 zero 값으로 설정.
+    /* 동적 zero 캘리브레이션: 10초 동안 정지 상태 raw 평균을 모아 zero 값으로 설정.
        이 동안엔 sum_sq 누적이 멈춰 RMS=0으로 광고되지만, BLE 첫 광고가 이 이후에
        시작되므로 사실상 노출되지 않는다. */
     const uint32_t CAL_MS = 10000;
@@ -139,6 +183,15 @@ void app_main(void)
     ulp_shared.sum_sq_z     = 0;
     ulp_shared.sample_count = 0;
     ulp_shared.cal_phase    = 0;
+
+// #if ADXL_RAW_CAPTURE
+//     /* 노이즈 분석용 raw 캡처: 기기 정지 상태로 두면 60초간 x,y,z(counts)를
+//        UART로 CSV 출력. 시리얼 터미널 로그를 파일로 저장 후
+//        adxl_noise_fft.py --units counts --fs 200 으로 분석.
+//        운영 빌드에선 ulp_shared.h의 ADXL_RAW_CAPTURE를 0으로. */
+//     ESP_LOGW(TAG, "ADXL raw capture mode: hold device still, streaming 60s CSV...");
+//     adxl_raw_capture(60);
+// #endif
 
     nimble_port_init();
     ble_svc_gap_init();

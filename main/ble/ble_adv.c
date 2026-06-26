@@ -24,8 +24,8 @@ extern volatile ulp_shared_t ulp_shared;
 /*
  * Manufacturer Specific Data (13바이트)
  *   [0..1]   company ID (LE) = 0x1234
- *   [2..3]   temp1   (°C × 100, int16 LE)   GPIO4 NTC
- *   [4..5]   temp2   (°C × 100, int16 LE)   GPIO5 NTC
+ *   [2..3]   temp1   (°C × 100, int16 LE)   GPIO3 NTC (TH1)
+ *   [4..5]   temp2   (°C × 100, int16 LE)   GPIO4 NTC (TH2)
  *   [6..7]   rms_x   (mg, uint16 LE)
  *   [8..9]   rms_y   (mg, uint16 LE)
  *   [10..11] rms_z   (mg, uint16 LE)
@@ -88,9 +88,13 @@ static void build_mfg_data(void)
     mfg_data[10] = (uint8_t)(rms_z_mg & 0xFF);
     mfg_data[11] = (uint8_t)(rms_z_mg >> 8);
 
-    ESP_LOGI(TAG, "ADV  T1=%.2f T2=%.2f C  RMS X=%u Y=%u Z=%u mg device_id = %u",
-             temp1 / 100.0f, temp2 / 100.0f,
+    /* HW 디버깅용: 써미스터 온도 + raw NTC counts를 1초마다 표시.
+       (운영 펌웨어에서 로그를 줄이려면 아래 ESP_LOGI를 ESP_LOGD로 내리면 됨.) */
+    ESP_LOGI(TAG, "ADV  RMS X=%u Y=%u Z=%u mg device_id = %u",
              rms_x_mg, rms_y_mg, rms_z_mg, ESP_DEVICE_ID);
+    ESP_LOGI(TAG, "therm T1=%.2f T2=%.2f C (raw ntc1=%d ntc2=%d)",
+             temp1 / 100.0f, temp2 / 100.0f,
+             (int)ulp_shared.last_raw_ntc1, (int)ulp_shared.last_raw_ntc2);
     ESP_LOGI(TAG, "raw: x=%d y=%d z=%d  zero=(%d,%d,%d)  dx=%d dy=%d dz=%d",
              ulp_shared.last_raw_x, ulp_shared.last_raw_y, ulp_shared.last_raw_z,
              ulp_shared.zero_x, ulp_shared.zero_y, ulp_shared.zero_z,

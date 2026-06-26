@@ -3,9 +3,9 @@
 #include <stdint.h>
 
 /* ADXL335 가속도 센서 캘리브레이션 (3.3V 공급, 12-bit ADC) */
-#define ADXL335_ZERO_X   1920.01f
-#define ADXL335_ZERO_Y   1860.66f
-#define ADXL335_ZERO_Z   1963.66f
+// #define ADXL335_ZERO_X   1920.01f
+// #define ADXL335_ZERO_Y   1860.66f
+// #define ADXL335_ZERO_Z   1963.66f
 #define ADXL335_SENS_X    406.845f
 #define ADXL335_SENS_Y    407.095f
 #define ADXL335_SENS_Z    399.405f
