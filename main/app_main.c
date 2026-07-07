@@ -181,6 +181,9 @@ void app_main(void)
     ulp_shared.sum_sq_x     = 0;
     ulp_shared.sum_sq_y     = 0;
     ulp_shared.sum_sq_z     = 0;
+    ulp_shared.sum_dx_x     = 0;
+    ulp_shared.sum_dx_y     = 0;
+    ulp_shared.sum_dx_z     = 0;
     ulp_shared.sample_count = 0;
     ulp_shared.cal_phase    = 0;
 

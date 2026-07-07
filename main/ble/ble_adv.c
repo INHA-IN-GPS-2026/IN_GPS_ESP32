@@ -50,32 +50,53 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
     return 0;
 }
 
-/* ULP 누적값을 읽고 0으로 리셋 (최대 1샘플 race 손실은 무시). */
+/* ULP 누적값을 읽고 0으로 리셋 (최대 1샘플 race 손실은 무시).
+   분산 계산용 dx 합(dx/dy/dz)도 함께 읽어 리셋. */
 static void read_and_reset_accum(uint32_t *sx, uint32_t *sy, uint32_t *sz,
+                                 int32_t *dx, int32_t *dy, int32_t *dz,
                                  uint32_t *n)
 {
     *n  = ulp_shared.sample_count;
     *sx = ulp_shared.sum_sq_x;
     *sy = ulp_shared.sum_sq_y;
     *sz = ulp_shared.sum_sq_z;
+    *dx = ulp_shared.sum_dx_x;
+    *dy = ulp_shared.sum_dx_y;
+    *dz = ulp_shared.sum_dx_z;
 
     ulp_shared.sum_sq_x     = 0;
     ulp_shared.sum_sq_y     = 0;
     ulp_shared.sum_sq_z     = 0;
+    ulp_shared.sum_dx_x     = 0;
+    ulp_shared.sum_dx_y     = 0;
+    ulp_shared.sum_dx_z     = 0;
     ulp_shared.sample_count = 0;
 }
 
 static void build_mfg_data(void)
 {
     uint32_t sx, sy, sz, n;
-    read_and_reset_accum(&sx, &sy, &sz, &n);
+    int32_t  dx, dy, dz;
+    read_and_reset_accum(&sx, &sy, &sz, &dx, &dy, &dz, &n);
 
-    uint16_t rms_x_mg = accel_rms_to_mg(sx, n, ADXL335_SENS_X);
-    uint16_t rms_y_mg = accel_rms_to_mg(sy, n, ADXL335_SENS_Y);
-    uint16_t rms_z_mg = accel_rms_to_mg(sz, n, ADXL335_SENS_Z);
+    uint16_t rms_x_mg = accel_rms_to_mg(sx, dx, n, ADXL335_SENS_X);
+    uint16_t rms_y_mg = accel_rms_to_mg(sy, dy, n, ADXL335_SENS_Y);
+    uint16_t rms_z_mg = accel_rms_to_mg(sz, dz, n, ADXL335_SENS_Z);
 
-    int16_t temp1 = raw_to_temp_x100((uint16_t)ulp_shared.last_raw_ntc1);
-    int16_t temp2 = raw_to_temp_x100((uint16_t)ulp_shared.last_raw_ntc2);
+    /* NTC 창 평균: 지난 1초간 ULP가 누적한 raw를 평균내 온도로 변환.
+       ntc_count==0(부팅 직후 경계)이면 최신 순시값으로 폴백. 최대 1샘플 race 손실은 무시.
+       순시 1샘플 대신 ~200샘플 평균 → 온도 지터 √N(~14×) 감소, 추가 지연 없음. */
+    uint32_t ntc_n = ulp_shared.ntc_count;
+    uint16_t avg_ntc1 = ntc_n ? (uint16_t)(ulp_shared.sum_ntc1 / ntc_n)
+                              : (uint16_t)ulp_shared.last_raw_ntc1;
+    uint16_t avg_ntc2 = ntc_n ? (uint16_t)(ulp_shared.sum_ntc2 / ntc_n)
+                              : (uint16_t)ulp_shared.last_raw_ntc2;
+    ulp_shared.sum_ntc1  = 0;
+    ulp_shared.sum_ntc2  = 0;
+    ulp_shared.ntc_count = 0;
+
+    int16_t temp1 = raw_to_temp_x100(avg_ntc1);
+    int16_t temp2 = raw_to_temp_x100(avg_ntc2);
 
     mfg_data[2]  = (uint8_t)((uint16_t)temp1 & 0xFF);
     mfg_data[3]  = (uint8_t)((uint16_t)temp1 >> 8);
@@ -90,8 +111,10 @@ static void build_mfg_data(void)
 
     /* HW 디버깅용: 써미스터 온도 + raw NTC counts를 1초마다 표시.
        (운영 펌웨어에서 로그를 줄이려면 아래 ESP_LOGI를 ESP_LOGD로 내리면 됨.) */
-    ESP_LOGI(TAG, "ADV  RMS X=%u Y=%u Z=%u mg device_id = %u",
-             rms_x_mg, rms_y_mg, rms_z_mg, ESP_DEVICE_ID);
+    /* fs = 지난 1초 창의 실효 샘플 수. 오버샘플링(SHIFT)을 올려도 이 값이 ~200 근처를
+       유지해야 함. 크게 떨어지면 한 사이클이 5ms를 넘긴 것 → SHIFT를 낮출 것. */
+    ESP_LOGI(TAG, "ADV  RMS X=%u Y=%u Z=%u mg  fs=%u/s  ntc_n=%u  device_id=%u",
+             rms_x_mg, rms_y_mg, rms_z_mg, (unsigned)n, (unsigned)ntc_n, ESP_DEVICE_ID);
     ESP_LOGI(TAG, "therm T1=%.2f T2=%.2f C (raw ntc1=%d ntc2=%d)",
              temp1 / 100.0f, temp2 / 100.0f,
              (int)ulp_shared.last_raw_ntc1, (int)ulp_shared.last_raw_ntc2);

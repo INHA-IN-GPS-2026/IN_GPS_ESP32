@@ -11,7 +11,7 @@
 #if   ESP32_NUM == 1
 #define ESP_DEVICE_ID  0x01    /* main.c data_A[10] */
 #elif ESP32_NUM == 2
-    #define ESP_DEVICE_ID  0x03
+    #define ESP_DEVICE_ID  0x02
 #elif ESP32_NUM == 3
 #define ESP_DEVICE_ID  0x07
 #elif ESP32_NUM == 4

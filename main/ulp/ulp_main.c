@@ -30,6 +30,12 @@ int main(void)
         shared.sum_sq_x      = 0;
         shared.sum_sq_y      = 0;
         shared.sum_sq_z      = 0;
+        shared.sum_dx_x      = 0;
+        shared.sum_dx_y      = 0;
+        shared.sum_dx_z      = 0;
+        shared.sum_ntc1      = 0;
+        shared.sum_ntc2      = 0;
+        shared.ntc_count     = 0;
         shared.sample_count  = 0;
         shared.total_samples = 0;
 #if ADXL_RAW_CAPTURE
@@ -46,6 +52,12 @@ int main(void)
     shared.last_raw_ntc1 = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_2);
     (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_3);
     shared.last_raw_ntc2 = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_3);
+
+    /* NTC 창 평균용 누적(덧셈만, 나눗셈은 main). 매 사이클 200Hz로 쌓고
+       main이 1초마다 ntc_count로 나눠 평균 raw를 온도로 변환 → ADC 잡음 √N 저감, 지연 0. */
+    shared.sum_ntc1 += (uint32_t)shared.last_raw_ntc1;
+    shared.sum_ntc2 += (uint32_t)shared.last_raw_ntc2;
+    shared.ntc_count++;
 
     /* ADXL335: CH4=GPIO5 (X_OUT), CH5=GPIO6 (Y_OUT), CH6=GPIO7 (Z_OUT).
        GPIO8(CH7)은 SDA_OUT(I2C)이므로 절대 ADC로 읽지 말 것.
@@ -84,6 +96,12 @@ int main(void)
         shared.sum_sq_x += (uint32_t)(dx * dx);
         shared.sum_sq_y += (uint32_t)(dy * dy);
         shared.sum_sq_z += (uint32_t)(dz * dz);
+
+        /* dx의 단순 합도 누적(덧셈 1회/축). main이 윈도우 평균을 빼고
+           분산을 계산해 자세 독립 RMS를 만든다. 곱셈·나눗셈 없음. */
+        shared.sum_dx_x += dx;
+        shared.sum_dx_y += dy;
+        shared.sum_dx_z += dz;
     }
     shared.sample_count++;
     shared.total_samples++;

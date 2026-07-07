@@ -24,10 +24,12 @@
 
 
 /**
- * @brief 누적 sum_sq와 샘플 수로부터 RMS 진동을 mg 단위로 변환.
+ * @brief 누적 sum_sq, dx 합(sum_dx), 샘플 수로부터 RMS 진동을 mg 단위로 변환.
+ *        윈도우 평균(DC)을 빼고 분산으로 계산하므로 자세/기울기에 독립적이다:
+ *          var = sum_sq/n - (sum_dx/n)^2,  rms = sqrt(var).
  *        N=0이면 0 반환.
  */
-uint16_t accel_rms_to_mg(uint32_t sum_sq, uint32_t n, float sens);
+uint16_t accel_rms_to_mg(uint32_t sum_sq, int32_t sum_dx, uint32_t n, float sens);
 
 /**
  * @brief NTC raw ADC 값을 온도(x100, int16)로 변환. 예: 25.50°C → 2550.
