@@ -19,5 +19,8 @@ Thumbs.db
 #claude
 .claude/
 
+#Docs
+Docs/
+
 # CMake/compilation database (optional)
 compile_commands.json

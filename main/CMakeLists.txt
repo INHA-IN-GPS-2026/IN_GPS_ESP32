@@ -4,6 +4,7 @@ idf_component_register(
         "ble/ble_adv.c"
         "sensor/sensor.c"
         "ulp/ulp_init.c"
+        "watchdog/wdt_guard.c"
     INCLUDE_DIRS "."
     REQUIRES ulp nvs_flash bt esp_adc hal led_strip esp_pm esp_hw_support
 )

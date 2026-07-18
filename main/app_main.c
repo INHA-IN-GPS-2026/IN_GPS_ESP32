@@ -4,6 +4,7 @@
 #include "esp_pm.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
 #include <stdio.h>
 #include "nvs_flash.h"
 #include "led_strip.h"
@@ -22,10 +23,20 @@
 #include "ulp/ulp_init.h"
 #include "ulp_shared.h"
 #include "ble/ble_adv.h"
+#include "sensor/sensor.h"
+#include "watchdog/wdt_guard.h"
 
 static const char *TAG = "APP_MAIN";
 
 uint8_t g_own_addr_type = BLE_OWN_ADDR_RANDOM;
+
+/* ★2026-07-15: 딥슬립 burst 재설계(wake→정착→측정→BLE burst→딥슬립)를 시도했다가
+   롤백함. 이유: BLE_INIT(NimBLE 컨트롤러+호스트 초기화)만으로 실측 1.1초+ 걸려서,
+   "매 사이클 완전 재부팅+BLE 재초기화" 구조로는 1초 주기 송신을 물리적으로 못 맞춤
+   (사용자 요구사항: 측정값을 1초마다 BLE로 송신). → 상시가동+상시광고로 복귀.
+   ULP+ADC 상시전류(800µA~2mA, ESP-IDF #11407)는 이 요구사항 하에선 감수.
+   딥슬립 관련 코드(RTC_DATA_ATTR, esp_sleep_*, adv_burst_start 등)는 참고/차후
+   재시도용으로 ulp_init.c·ble_adv.c에 남겨뒀지만 여기선 안 씀. */
 
 /* STM32 게이트웨이가 매칭하는 BLE address (NimBLE wire format, LSB-first).
    main.c의 ADDR_A 케이스와 동일한 byte order. 첫 옥텟은 ble_adv.h의
@@ -52,18 +63,6 @@ static void nimble_host_task(void *param)
     (void)param;
     nimble_port_run();
     nimble_port_freertos_deinit();
-    vTaskDelete(NULL);
-}
-
-/* 5초 후 한 번 PM 락 덤프 → BLE 컨트롤러 init과 첫 광고가 끝난 뒤의
-   안정된 상태를 보기 위함. printf는 LOG NONE과 무관하게 출력됨. */
-static void pm_diag_task(void *arg)
-{
-    (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(5000));
-    printf("\n=== PM locks (post BLE init) ===\n");
-    esp_pm_dump_locks(stdout);
-    printf("================================\n");
     vTaskDelete(NULL);
 }
 
@@ -112,6 +111,14 @@ static void pm_diag_task(void *arg)
 
 void app_main(void)
 {
+    /* ★2026-07-18: 워치독 계층 초기화(상세: Docs/Watchdog_설계.md).
+       - 리셋 사유 로그 + 비정상 리셋 카운터 갱신
+       - Task WDT 8s/panic 재설정 + app_main을 부팅 구간 감시 대상으로 등록
+       - 헬스모니터 태스크 기동(ULP 정지·ADV 갱신 정지 감지 → 자가 재부팅)
+       이후 부팅 단계 사이의 wdt_guard_feed()는 "이 지점까지 8s 내 도달"을
+       보증하는 체크포인트다. 마지막에 wdt_guard_boot_done()으로 감시 이관. */
+    wdt_guard_init();
+
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
@@ -137,6 +144,7 @@ void app_main(void)
            쥐고 있어 light sleep으로 못 들어감. clear 후 즉시 del. */
         led_strip_del(led_strip);
     }
+    wdt_guard_feed();   /* 체크포인트: NVS+LED 초기화 완료 */
 
     /* BLE MAC은 base MAC 경로(esp_base_mac_addr_set) 대신 NimBLE 측에서
        Random Address로 직접 설정. on_sync()에서 ble_hs_id_set_rnd 호출. */
@@ -157,32 +165,57 @@ void app_main(void)
        remain valid for ULP between sample cycles. */
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
-    ESP_LOGI(TAG, "Start ULP ADXL vibration sampler (200 Hz)...");
-    start_ulp_adc_gpio4();
+    /* ★2026-07-18 fast resume: 비정상 리셋(WDT/panic/자가복구)에서 온 부팅이면
+       RTC_NOINIT에 보관해 둔 직전 zero를 재사용해 10초 재캘리브를 생략 →
+       "1초마다 BLE 송신" 요구사항의 복구 다운타임을 ~11.5s에서 ~1.5s로 단축.
+       do_zero_cal=false 경로는 07-15 딥슬립 재설계 때 만들어 둔 것을 재활용. */
+    int16_t saved_zx = 0, saved_zy = 0, saved_zz = 0;
+    bool fast_resume = wdt_guard_fast_resume(&saved_zx, &saved_zy, &saved_zz);
 
-    /* 동적 zero 캘리브레이션: 10초 동안 정지 상태 raw 평균을 모아 zero 값으로 설정.
-       이 동안엔 sum_sq 누적이 멈춰 RMS=0으로 광고되지만, BLE 첫 광고가 이 이후에
-       시작되므로 사실상 노출되지 않는다. */
-    const uint32_t CAL_MS = 10000;
-    ESP_LOGI(TAG, "Calibrating ADXL zero (hold device still for %ums)...", (unsigned)CAL_MS);
-    vTaskDelay(pdMS_TO_TICKS(CAL_MS));
+    ESP_LOGI(TAG, "Start ULP ADXL vibration sampler (200 Hz)%s...",
+             fast_resume ? " [fast resume]" : "");
+    start_ulp_adc_measurement(/*do_zero_cal=*/!fast_resume,
+                              saved_zx, saved_zy, saved_zz);
+    /* NTC: ULP가 200Hz로 raw 누적(sum_ntc/ntc_count) → 온도변환은 ble_adv에서
+       Ratiometric+S-H로. adc_cali는 ratiometric을 깨서 제거함. */
 
-    uint32_t n = ulp_shared.sample_count;
-    if (n > 0) {
-        ulp_shared.zero_x = (int16_t)(ulp_shared.sum_raw_x / n);
-        ulp_shared.zero_y = (int16_t)(ulp_shared.sum_raw_y / n);
-        ulp_shared.zero_z = (int16_t)(ulp_shared.sum_raw_z / n);
+    if (!fast_resume) {
+        /* 동적 zero 캘리브레이션: 10초 동안 정지 상태 raw 평균을 모아 zero 값으로 설정.
+           이 동안엔 sum_sq 누적이 멈춰 RMS=0으로 광고되지만, BLE 첫 광고가 이 이후에
+           시작되므로 사실상 노출되지 않는다. */
+        const uint32_t CAL_MS = 10000;
+        ESP_LOGI(TAG, "Calibrating ADXL zero (hold device still for %ums)...", (unsigned)CAL_MS);
+        /* TWDT(8s)보다 긴 대기이므로 1초 단위로 쪼개 feed하며 기다린다. */
+        for (uint32_t t = 0; t < CAL_MS; t += 1000) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            wdt_guard_feed();
+        }
+
+        uint32_t n = ulp_shared.sample_count;
+        if (n > 0) {
+            ulp_shared.zero_x = (int16_t)(ulp_shared.sum_raw_x / n);
+            ulp_shared.zero_y = (int16_t)(ulp_shared.sum_raw_y / n);
+            ulp_shared.zero_z = (int16_t)(ulp_shared.sum_raw_z / n);
+        }
+        ESP_LOGI(TAG, "Calibrated zero (N=%u): X=%d Y=%d Z=%d",
+                 (unsigned)n,
+                 ulp_shared.zero_x, ulp_shared.zero_y, ulp_shared.zero_z);
+
+        /* 다음 비정상 리셋 대비 zero 보관(fast resume용) */
+        wdt_guard_save_zero(ulp_shared.zero_x, ulp_shared.zero_y, ulp_shared.zero_z);
+
+        /* 정상 모드 전환 + 누적 리셋 */
+        ulp_shared.sum_sq_x     = 0;
+        ulp_shared.sum_sq_y     = 0;
+        ulp_shared.sum_sq_z     = 0;
+        ulp_shared.sample_count = 0;
+        ulp_shared.cal_phase    = 0;
+    } else {
+        /* start_ulp_adc_measurement(false, ...)가 zero 적용+cal_phase=0까지 처리 */
+        ESP_LOGW(TAG, "WDT recovery boot: reusing saved zero (%d,%d,%d), skip 10s cal",
+                 saved_zx, saved_zy, saved_zz);
     }
-    ESP_LOGI(TAG, "Calibrated zero (N=%u): X=%d Y=%d Z=%d",
-             (unsigned)n,
-             ulp_shared.zero_x, ulp_shared.zero_y, ulp_shared.zero_z);
-
-    /* 정상 모드 전환 + 누적 리셋 */
-    ulp_shared.sum_sq_x     = 0;
-    ulp_shared.sum_sq_y     = 0;
-    ulp_shared.sum_sq_z     = 0;
-    ulp_shared.sample_count = 0;
-    ulp_shared.cal_phase    = 0;
+    wdt_guard_feed();   /* 체크포인트: ULP 기동+캘리브 완료 */
 
 // #if ADXL_RAW_CAPTURE
 //     /* 노이즈 분석용 raw 캡처: 기기 정지 상태로 두면 60초간 x,y,z(counts)를
@@ -193,14 +226,17 @@ void app_main(void)
 //     adxl_raw_capture(60);
 // #endif
 
-    nimble_port_init();
+    nimble_port_init();   /* BLE_INIT 실측 1.1s+ — TWDT 8s 내 여유 */
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_svc_gap_device_name_set("IN_GPS");
+    wdt_guard_feed();   /* 체크포인트: NimBLE 초기화 완료 */
 
     ble_hs_cfg.sync_cb = on_sync;
 
     nimble_port_freertos_init(nimble_host_task);
 
-    xTaskCreate(pm_diag_task, "pm_diag", 3072, NULL, 1, NULL);
+    /* 부팅 감시 종료 + 앱 헬스체크(ULP·ADV) 활성화. 이 시점부터 15s 내
+       광고 갱신이 한 번도 성공하지 못하면(sync 실패 포함) 자가 재부팅. */
+    wdt_guard_boot_done();
 }

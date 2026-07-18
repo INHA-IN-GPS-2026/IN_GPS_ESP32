@@ -14,22 +14,25 @@
 //ADXL335 가속도 센서 캘리브레이션 (3.3V 공급, 12-bit ADC)
 // 전달 사항 PCB 기판 뜨고 ADXL 방향이 정방향인지 역방향인지 어떤 방향인지 확인하고 계산 필요
 
-/* NTC 서미스터 (VCC → NTC → ADC → R_pulldown → GND) */
+/* NTC 서미스터 (3.3V → NTC → ADC node → R_pulldown → GND) */
 #define THERMISTOR_R_PULLDOWN   10000.0f
-#define THERMISTOR_R0           10000.0f
-#define THERMISTOR_T0           298.15f
-#define THERMISTOR_BETA         3950.0f
-#define ADC_REF_VOLTAGE_MV      3300
+#define ADC_REF_VOLTAGE_MV      3300      /* (미사용) 분압 상단 공급전압. ratiometric이라 약분됨 */
 #define ADC_MAX_RAW             4095.0f
 
+/* Steinhart-Hart 계수는 sensor.c에 채널별 배열로 정의(end-to-end 캘리브용).
+   1/T[K] = A + B·ln(R) + C·(ln R)^3. */
 
-/**
+
+/** 
  * @brief 누적 sum_sq와 샘플 수로부터 RMS 진동을 mg 단위로 변환.
  *        N=0이면 0 반환.
- */
+ */ 
 uint16_t accel_rms_to_mg(uint32_t sum_sq, uint32_t n, float sens);
 
 /**
- * @brief NTC raw ADC 값을 온도(x100, int16)로 변환. 예: 25.50°C → 2550.
+ * @brief NTC raw ADC 값(오버샘플 평균 float)을 온도(x100, int16)로 변환.
+ *        Ratiometric raw→R (공급전압 약분, 면역) → 채널별 Steinhart-Hart.
+ * @param raw  오버샘플 평균 raw
+ * @param ch   0 = temp1(CH2), 1 = temp2(CH3) — 채널별 S-H 계수 선택
  */
-int16_t raw_to_temp_x100(uint16_t raw);
+int16_t raw_to_temp_x100(float raw, int ch);

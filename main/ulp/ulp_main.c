@@ -35,17 +35,48 @@ int main(void)
 #if ADXL_RAW_CAPTURE
         shared.ring_head     = 0;
 #endif
+#if NTC_RAW_CAPTURE
+        shared.ntc_ring_head = 0;
+#endif
     }
 
     /* 채널 전환 직후엔 SAR 내부 sample-and-hold cap이 이전 채널 잔류전압을 유지하므로
        첫 read는 dummy로 버리고 두 번째 read만 사용. NTC(소스 임피던스 5~10kΩ) 측정의
-       채널 간 누설을 막고 ADXL 측정 정밀도도 함께 개선. */
+       채널 간 누설을 막고 ADXL 측정 정밀도도 함께 개선.
+       ★07-15: dummy 1회→NTC_SETTLE_READS회로 확장. 07-08 스코프에서 CH2 노드가
+       채널전환 크로스토크와 별개로 ULP 자체 샘플 시점마다 -673mV 딥을 보였는데(고
+       임피던스 노드 charge injection), 이건 dummy 1회로는 못 잡고 정착 리드를
+       늘려야 완화된다는 게 그때 결론(무HW 레버). 마지막 read만 실사용치로 채택. */
     /* HW 핀맵(ESP32-S3-WROOM-1 스키매틱): 아날로그가 GPIO3~7로 한 칸씩 내려감.
        ADC1_CHx = GPIO(x+1) → TH1=GPIO3=CH2, TH2=GPIO4=CH3. */
-    (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_2);
+    for (int i = 0; i < NTC_SETTLE_READS - 1; i++) {
+        (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_2);
+    }
     shared.last_raw_ntc1 = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_2);
-    (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_3);
+    for (int i = 0; i < NTC_SETTLE_READS - 1; i++) {
+        (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_3);
+    }
     shared.last_raw_ntc2 = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_3);
+
+    /* NTC 오버샘플링 누적(덧셈만; 나눗셈은 main). 매 200Hz 사이클마다 1샘플 적재
+       → main이 1초마다 sum/count로 평균 → 비상관 노이즈 √N 저감(≈√200).
+       ★07-16: main은 이제 이 sum/count 대신 아래 ring 기반 trimmed mean을
+       쓰지만, 오버플로 방지용으로 sum/count 누적 자체는 계속 둔다(main이
+       주기적으로 읽고 0 리셋). */
+    shared.sum_ntc1 += (uint32_t)shared.last_raw_ntc1;
+    shared.sum_ntc2 += (uint32_t)shared.last_raw_ntc2;
+    shared.ntc_count++;
+
+#if NTC_RAW_CAPTURE
+    /* NTC raw 개별 샘플 스트리밍: main이 링버퍼를 정렬 후 상하위 trim%
+       잘라낸 trimmed mean으로 VCC dip 등 짧은 이상치를 걸러낼 수 있게 함. */
+    {
+        uint32_t h = shared.ntc_ring_head & NTC_RING_MASK;
+        shared.ntc_ring1[h] = shared.last_raw_ntc1;
+        shared.ntc_ring2[h] = shared.last_raw_ntc2;
+        shared.ntc_ring_head++;
+    }
+#endif
 
     /* ADXL335: CH4=GPIO5 (X_OUT), CH5=GPIO6 (Y_OUT), CH6=GPIO7 (Z_OUT).
        GPIO8(CH7)은 SDA_OUT(I2C)이므로 절대 ADC로 읽지 말 것.

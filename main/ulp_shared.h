@@ -33,6 +33,44 @@
 #endif
 #define ADXL_OVERSAMPLE_N (1u << ADXL_OVERSAMPLE_SHIFT)
 
+/* === NTC 채널전환 정착(settle) 리드 수 ================================
+   07-08 스코프 실측: CH2 NTC 노드가 ULP ADC 샘플 시점마다(~170Hz) -673mV
+   폭락 → SAR S/H가 고임피던스(5~10kΩ) NTC 노드에서 전하를 끌어가는 charge
+   injection이 원인으로 진단됨(하드웨어 100nF 캡이 근본 수정이나 미실장).
+   그때 결론: "무HW 레버 = ULP ADC 샘플/획득시간 늘리면 딥 감소".
+   기존엔 채널 전환 후 dummy read 1회만 버리고 바로 본 샘플을 썼는데(잔류
+   전압 크로스토크만 제거, 획득시간 자체는 그대로) → dummy read 횟수를
+   늘려 고임피던스 노드가 더 오래 정착할 시간을 준다(소프트웨어만으로
+   acquisition time을 사실상 늘리는 효과). 2~3회로 시작해 raw 로그로
+   딥이 줄었는지(σ, avg_raw 안정성) 확인 후 조정 권장. 5ms(200Hz) 예산
+   안에서 안전한 범위(ADC 1회 read가 수십 μs 수준). */
+#ifndef NTC_SETTLE_READS
+#define NTC_SETTLE_READS 3
+#endif
+
+/* === NTC raw 캡처 + trimmed mean (2026-07-16) ==========================
+   vcc40.csv 실측: ~112ms 주기, ~1.3ms 폭짜리 VCC dip 확인(BLE TX 전류
+   버스트로 추정). ESP32 ADC 기준전압이 VCC에 안 묶여있어(내부 밴드갭)
+   ratiometric 분압으로도 이 dip이 raw에 그대로 새어들어옴 — dip이 뜬
+   순간 raw_ntc가 수백 count 튈 수 있음(sensor.c VCC 민감도 계산 참고).
+   duty cycle이 낮아(~1.2%) 1초 180여 샘플 중 1~2개만 오염되므로, ULP가
+   raw를 sum만 누적하던 방식 대신 링버퍼에 개별 샘플을 남기고 main이
+   정렬 후 상하위 trim%씩 잘라낸 trimmed mean을 쓰면 이 이상치를 순수
+   소프트웨어로 제거할 수 있다. (VCC가 초 단위 이상 지속적으로 밀리는
+   경우는 이 방법으로 못 잡음 — 그건 별도 VCC센스 채널이 필요, 미구현.) */
+#ifndef NTC_RAW_CAPTURE
+#define NTC_RAW_CAPTURE 1
+#endif
+#define NTC_RING_LEN  256
+#define NTC_RING_MASK (NTC_RING_LEN - 1)
+
+/* 트림 비율(편측). 0.05 = 상하위 5%씩(합 10%) 잘라내고 평균.
+   1초 183~184샘플 기준 상하위 각 ~9개 제외 — dip 오염 샘플(최대
+   1~2개/초 추정)을 넉넉히 커버하면서도 표본을 과하게 버리진 않는다. */
+#ifndef NTC_TRIM_FRAC
+#define NTC_TRIM_FRAC 0.05f
+#endif
+
 // /*
 //   ADXL335 진동 누적기 (ULP RISC-V)
  
@@ -67,9 +105,27 @@ typedef struct {
     int16_t  last_raw_z;
     int16_t  reserved2;
 
-    /* 최신 NTC raw (BLE 광고 시 온도 변환에 사용) */
+    /* 최신 NTC raw (진단/로그용) */
     int16_t  last_raw_ntc1;
     int16_t  last_raw_ntc2;
+
+    /* NTC 오버샘플링 누적: ULP가 200Hz로 raw를 더하고 main이 1초마다
+       sum/count로 평균 → 비상관 노이즈 √N 저감. main이 읽고 0 리셋.
+       ★07-16: 평균 자체는 아래 ntc_ring 기반 trimmed mean으로 대체됨 —
+       이 sum/count는 오버플로 방지용으로 계속 리셋만 되고 실제 평균
+       계산엔 더 이상 안 쓰임(호환/폴백용으로 필드는 유지). */
+    uint32_t sum_ntc1;
+    uint32_t sum_ntc2;
+    uint32_t ntc_count;
+
+#if NTC_RAW_CAPTURE
+    /* === NTC raw 스트리밍 링버퍼 (단일 생산자=ULP / 단일 소비자=main) ===
+       ADXL_RAW_CAPTURE 링버퍼와 동일 패턴. ULP가 ntc_ring_head를 증가시키며
+       적재, main이 자체 tail로 드레인 후 trimmed mean 계산. */
+    uint32_t ntc_ring_head;
+    int16_t  ntc_ring1[NTC_RING_LEN];
+    int16_t  ntc_ring2[NTC_RING_LEN];
+#endif
 
     /* 동적 zero 보정용 raw 누적 (3s × 200Hz × ~2000 → int16 overflow, uint32 필요) */
     uint32_t sum_raw_x;
