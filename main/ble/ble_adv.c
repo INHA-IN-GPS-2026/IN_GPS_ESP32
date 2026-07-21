@@ -17,6 +17,7 @@
 #include "sensor/sensor.h"
 #include "ulp_shared.h"
 #include "watchdog/wdt_guard.h"
+#include "watchdog/wdt_test.h"
 
 static const char *TAG = "BLE_ADV";
 
@@ -212,15 +213,17 @@ static void build_mfg_data(void)
     mfg_data[10] = raw1_frac;
     mfg_data[11] = raw2_frac;
 
-    /* HW 디버깅용: 써미스터 온도 + raw NTC counts를 1초마다 표시.
-       (운영 펌웨어에서 로그를 줄이려면 아래 ESP_LOGI를 ESP_LOGD로 내리면 됨.) */
-    ESP_LOGI(TAG, "ADV  RMS X=%u Y=%u Z=%u mg device_id = %u",
+    /* ★2026-07-18: [[NTC_RAW_DIAG]] 3초 주기 floating 재발 확인 끝(미재현 확인,
+       재캘리브 불필요 결론) — ESP_LOGI→ESP_LOGD로 재하향. 브라운아웃 완화
+       목적의 매초 UART 전류 절감 복구. 필요하면 이 블록 위 주석 패턴대로
+       다시 임시 복귀 가능. */
+    ESP_LOGD(TAG, "ADV  RMS X=%u Y=%u Z=%u mg device_id = %u",
              rms_x_mg, rms_y_mg, rms_z_mg, ESP_DEVICE_ID);
-    ESP_LOGI(TAG, "therm T1=%.2f T2=%.2f C (avg_raw1=%.1f avg_raw2=%.1f n=%u | last %d,%d)",
+    ESP_LOGD(TAG, "therm T1=%.2f T2=%.2f C (avg_raw1=%.1f avg_raw2=%.1f n=%u | last %d,%d)",
              temp1 / 100.0f, temp2 / 100.0f,
              avg_raw1, avg_raw2, (unsigned)ncnt,
              (int)ulp_shared.last_raw_ntc1, (int)ulp_shared.last_raw_ntc2);
-    ESP_LOGI(TAG, "raw: x=%d y=%d z=%d  zero=(%d,%d,%d)  dx=%d dy=%d dz=%d",
+    ESP_LOGD(TAG, "raw: x=%d y=%d z=%d  zero=(%d,%d,%d)  dx=%d dy=%d dz=%d",
              ulp_shared.last_raw_x, ulp_shared.last_raw_y, ulp_shared.last_raw_z,
              ulp_shared.zero_x, ulp_shared.zero_y, ulp_shared.zero_z,
              ulp_shared.last_raw_x - ulp_shared.zero_x,
@@ -296,6 +299,7 @@ void adv_cycle_task(void *arg)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         wdt_guard_feed();   /* TWDT: 루프 생존 신고 */
+        wdt_test_tick();    /* 장애 주입 테스트 스위치(WDT_TEST_MODE, 운영=0 no-op) */
 
         build_mfg_data();
         rc = encode_adv_fields(adv_data, &adv_len);
@@ -308,7 +312,7 @@ void adv_cycle_task(void *arg)
         rc = ble_gap_adv_set_data(adv_data, adv_len);
         if (rc != 0) {
             ESP_LOGE(TAG, "ble_gap_adv_set_data failed: %d", rc);
-        } else {
+        } else if (!wdt_test_suppress_heartbeat()) {
             wdt_guard_heartbeat(WDT_HB_ADV);   /* 갱신 성공 시에만 kick */
         }
     }

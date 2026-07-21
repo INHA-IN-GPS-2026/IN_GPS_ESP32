@@ -7,7 +7,7 @@
  * STM32 게이트웨이가 알아보는 보드 번호. main.c의 ESP32_NUM과 동일 의미.
  * 이 한 줄만 바꿔도 MAC 첫 옥텟과 device_id가 자동으로 ADDR_A 케이스로 따라감.
  * ============================================================ */
-#define ESP32_NUM  3
+#define ESP32_NUM  1
 
 #if   ESP32_NUM == 1
 #define ESP_DEVICE_ID  0x01    /* main.c data_A[10] */

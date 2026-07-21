@@ -55,7 +55,9 @@ static void on_sync(void)
     }
     ESP_LOGI(TAG, "BLE random address set (wire LSB-first 01 EE DD CC BB CA, air MAC CA:BB:CC:DD:EE:01)");
 
-    xTaskCreate(adv_cycle_task, "adv_cycle", 4096, NULL, 5, NULL);
+    /* Core 1 고정: BLE 컨트롤러/NimBLE 호스트(Core 0)와 경합 제거.
+       광고 페이로드 갱신·온도변환이 BLE 타이밍에 영향 주지 않도록 분리. */
+    xTaskCreatePinnedToCore(adv_cycle_task, "adv_cycle", 4096, NULL, 5, NULL, 1);
 }
 
 static void nimble_host_task(void *param)
@@ -126,8 +128,29 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    // 진단 중에는 INFO 로그 켜둠. 운영 펌웨어 만들 때 ESP_LOG_NONE으로 복귀.
-    esp_log_level_set("*", ESP_LOG_INFO);
+    /* ★2026-07-18: 05-18(ccb0688) 진단 모드에서 INFO로 켜둔 뒤 안 돌아왔던 걸
+       원복. 반복되는 Brownout 조사 중 "매초 UART 로그 출력 + 상시 160MHz(아래
+       pm_cfg)"가 배터리(LS14500, 연속전류 스펙이 낮은 Li-SOCl2) 평균 소비전류를
+       올려 브라운아웃 마진을 깎고 있다는 정황 확인. 로그 필요하면 특정 TAG만
+       ESP_LOG_INFO로 올려서(esp_log_level_set(TAG, ...)) 쓸 것. */
+    esp_log_level_set("*", ESP_LOG_NONE);
+    /* 위에서 전체를 죽여도 워치독 관련 태그는 살려둔다 — 안 그러면 리셋사유/
+       재부팅 사유("WDT_GUARD: reset reason=...", "self-recovery reboot: ...")가
+       UART에 하나도 안 찍혀서 Docs/Watchdog_설계.md 9절 검증 자체가 불가능해짐.
+       매초 도는 BLE_ADV(RMS/therm/raw 로그)는 그대로 묵음 — 전류절감 목적 유지. */
+    esp_log_level_set("WDT_GUARD", ESP_LOG_INFO);
+    esp_log_level_set("WDT_TEST", ESP_LOG_WARN);
+    /* pm 태그도 살려둠 — 안 그러면 아래 esp_pm_configure(&pm_cfg) 호출이 찍는
+       "Frequency switching config: ... Light sleep: ENABLED" 확인 로그가
+       묵음 처리돼, 부팅 초반에 뜨는 시스템 기본값(DISABLED) 로그만 보이고
+       실제로 우리가 건 설정이 적용됐는지 확인할 방법이 없어짐. 이 로그는
+       설정 변경 시 1회만 찍혀서 매초 로그처럼 전류에 영향 없음. */
+    esp_log_level_set("pm", ESP_LOG_INFO);
+    /* BLE_ADV도 INFO까지만 열어둠: adv_cycle_task()의 1회성 "ADV started
+       (continuous)" 확인 로그는 보이지만, build_mfg_data()의 매초 3줄짜리
+       RMS/therm/raw 데이터 로그는 ESP_LOGD로 내려놨으므로(ble_adv.c) 안 찍힘
+       — "광고가 실제로 시작됐는지"만 확인하고 매초 전류 소모는 피함. */
+    esp_log_level_set("BLE_ADV", ESP_LOG_INFO);
 
     // RGB LED(GPIO48) 끄기 - WS2812B는 led_strip으로 RGB(0,0,0) 전송해야 꺼짐
     led_strip_handle_t led_strip;
@@ -149,15 +172,19 @@ void app_main(void)
     /* BLE MAC은 base MAC 경로(esp_base_mac_addr_set) 대신 NimBLE 측에서
        Random Address로 직접 설정. on_sync()에서 ble_hs_id_set_rnd 호출. */
 
-    /* 진단 모드: light sleep과 DFS를 끄고 ADC 안정성 확인.
-       3초 주기 floating이 사라지면 light sleep transient가 원인. 운영 펌웨어로
-       복귀할 땐 min_freq_mhz=40, light_sleep_enable=true로 되돌리되, ULP ADC가
-       light sleep wake transient에 영향받지 않도록 별도 PM lock 또는 wake delay
-       처리가 필요. */
+    /* ★2026-07-18: 브라운아웃 조사로 원복. 05-18(ccb0688) 이후 진단용으로
+       max=min=160(상시 최대클럭)+light_sleep_enable=false 상태였던 걸 원래
+       의도(주석에 본인이 남겨둔 min_freq_mhz=40, light_sleep_enable=true)대로
+       되돌림 — 평균 소비전류를 낮춰 LS14500 브라운아웃 마진 확보.
+       ⚠ 미해결 TODO 그대로 남아있음: light sleep 복귀 시 ULP ADC가 wake
+       transient 영향을 받아 "3초 주기 floating"이 재발할 수 있음(이게 애초에
+       진단모드를 켰던 이유). 이 값으로 실기기 테스트 중 raw 로그/캘리브
+       안정성에서 3초 주기 흔들림이 다시 보이면, ULP ADC용 별도 PM lock 또는
+       wake-delay 처리를 추가로 구현해야 함(아직 미구현). */
     esp_pm_config_t pm_cfg = {
         .max_freq_mhz = 160,
-        .min_freq_mhz = 160,
-        .light_sleep_enable = false,
+        .min_freq_mhz = 40,
+        .light_sleep_enable = true,
     };
     ESP_ERROR_CHECK(esp_pm_configure(&pm_cfg));
 

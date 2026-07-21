@@ -211,8 +211,10 @@ void wdt_guard_init(void)
     wdt_guard_task_subscribe();
 
     /* 헬스모니터 기동. adv(5)보다 높은 prio 6 — 누가 5에서 spin해도 모니터는
-       돈다(그 경우 idle 기아는 어차피 TWDT가 잡음 — 계층 중복 방어). */
-    xTaskCreate(wdt_monitor_task, "wdt_guard", 3072, NULL, 6, NULL);
+       돈다(그 경우 idle 기아는 어차피 TWDT가 잡음 — 계층 중복 방어).
+       Core 1 고정(크로스코어 감시): BLE 스택이 사는 Core 0이 통째로 멈춰도
+       모니터는 Core 1에서 살아남아 heartbeat 미갱신을 감지·재부팅한다. */
+    xTaskCreatePinnedToCore(wdt_monitor_task, "wdt_guard", 3072, NULL, 6, NULL, 1);
 }
 
 void wdt_guard_boot_done(void)
