@@ -2,12 +2,16 @@
 build/
 sdkconfig.old
 sdkconfig.bak
+build_log.txt
+build_log2.txt
+build_log3.txt
 
 # Managed components (usually re-generated)
 managed_components/
 
 # Docs/Research
 Docs/
+Reference/
 
 # Python / OS junk
 __pycache__/
