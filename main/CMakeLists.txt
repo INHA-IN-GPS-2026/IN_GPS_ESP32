@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.c"
         "ble/ble_adv.c"
+        "ble/adv_manager.c"
         "sensor/sensor.c"
         "sensor/adc_cal.c"
         "ulp/ulp_init.c"

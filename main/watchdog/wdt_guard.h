@@ -42,6 +42,14 @@ void wdt_guard_boot_done(void);
 /** @brief 사유 로그 + UART 플러시 후 esp_restart(). 복구 불가 상황에서 호출. */
 void wdt_guard_reboot(const char *reason) __attribute__((noreturn));
 
+/** @return crash-loop escalation이 SAFE 모드를 선언했는지 (Analog 1.0.0).
+ *         true면 앱은 최소 기능(10s 광고, 캘리브 생략)으로 부팅해야 한다. */
+bool wdt_guard_safe_mode(void);
+
+/** @brief heartbeat 허용 한도(stale_ms) 조정. 적응형 광고 cadence(3s/10s)에서
+ *         오탐 재부팅 방지용. 기본값(15s)보다 짧게는 못 줄인다. */
+void wdt_guard_set_hb_stale(wdt_hb_id_t id, uint32_t stale_ms);
+
 /**
  * @brief 비정상 리셋(WDT/panic/자가복구 SW 리셋) 후 재부팅이면, 직전 가동에서
  *        저장해 둔 ADXL zero를 돌려주고 true. → 10초 재캘리브 생략(fast resume)

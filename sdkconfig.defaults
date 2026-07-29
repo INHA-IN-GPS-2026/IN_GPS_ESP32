@@ -1,0 +1,11 @@
+# Analog 1.0.0 — 1년 전력 설계 전제 (Docs/INGPS_1yr_firmware_design.md 8절)
+# 기존 로컬 sdkconfig가 있으면 우선됨 — 신규 빌드/CI 기준값.
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+# BLE 컨트롤러 modem sleep (광고 인터벌 사이 라디오 정지)
+CONFIG_BT_CTRL_MODEM_SLEEP=y
+CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
+# ★HW 체크리스트(설계문서 7절): 외부 32.768kHz 크리스털 장착 보드에서만 개방.
+#  크리스털 없이 켜면 BLE sleep clock 붕괴로 부팅/광고 실패 가능.
+# CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y
+# CONFIG_RTC_CLK_SRC_EXT_CRYS=y

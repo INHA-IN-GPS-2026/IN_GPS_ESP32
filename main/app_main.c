@@ -23,6 +23,7 @@
 #include "ulp/ulp_init.h"
 #include "ulp_shared.h"
 #include "ble/ble_adv.h"
+#include "ble/adv_manager.h"
 #include "sensor/adc_cal.h"
 #include "sensor/sensor.h"
 #include "watchdog/wdt_guard.h"
@@ -55,6 +56,9 @@ static void on_sync(void)
         return;
     }
     ESP_LOGI(TAG, "BLE random address set (wire LSB-first 01 EE DD CC BB CA, air MAC CA:BB:CC:DD:EE:01)");
+
+    /* TX 파워 knob(advm/tx_dbm, 기본 0dBm) 적용 — 컨트롤러 기동 후에만 유효 */
+    adv_manager_apply_tx_power();
 
     /* Core 1 고정: BLE 컨트롤러/NimBLE 호스트(Core 0)와 경합 제거.
        광고 페이로드 갱신·온도변환이 BLE 타이밍에 영향 주지 않도록 분리. */
@@ -129,6 +133,10 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
+    /* ★Analog 1.0.0: 적응형 광고 정책 초기화(NVS knob 로드).
+       crash-loop escalation이 SAFE를 선언했으면 여기서 10s 최소광고 모드로 고정. */
+    adv_manager_init();
+
     /* ★2026-07-18: 05-18(ccb0688) 진단 모드에서 INFO로 켜둔 뒤 안 돌아왔던 걸
        원복. 반복되는 Brownout 조사 중 "매초 UART 로그 출력 + 상시 160MHz(아래
        pm_cfg)"가 배터리(LS14500, 연속전류 스펙이 낮은 Li-SOCl2) 평균 소비전류를
@@ -152,6 +160,9 @@ void app_main(void)
        RMS/therm/raw 데이터 로그는 ESP_LOGD로 내려놨으므로(ble_adv.c) 안 찍힘
        — "광고가 실제로 시작됐는지"만 확인하고 매초 전류 소모는 피함. */
     esp_log_level_set("BLE_ADV", ESP_LOG_INFO);
+    /* 적응형 광고 상태 전이(MOVING↔STATIONARY)는 드물게 발생 — 전류 영향 없이
+       정책이 실제로 동작하는지 UART로 확인 가능하게 열어둔다. */
+    esp_log_level_set("ADV_MGR", ESP_LOG_INFO);
 
     // RGB LED(GPIO48) 끄기 - WS2812B는 led_strip으로 RGB(0,0,0) 전송해야 꺼짐
     led_strip_handle_t led_strip;
@@ -182,8 +193,12 @@ void app_main(void)
        진단모드를 켰던 이유). 이 값으로 실기기 테스트 중 raw 로그/캘리브
        안정성에서 3초 주기 흔들림이 다시 보이면, ULP ADC용 별도 PM lock 또는
        wake-delay 처리를 추가로 구현해야 함(아직 미구현). */
+    /* ★Analog 1.0.0: max 160→80. 이 펌웨어의 CPU 부하(페이로드 빌드+온도변환
+       수 ms/사이클)에 160MHz는 불필요하고, 80MHz가 액티브 구간 전류와 BLE TX
+       피크 겹침(브라운아웃 마진)을 함께 낮춘다. BLE 컨트롤러는 80MHz에서 정상.
+       회귀 의심 시 160으로 원복 후 power_exp로 비교(설계문서 9절). */
     esp_pm_config_t pm_cfg = {
-        .max_freq_mhz = 160,
+        .max_freq_mhz = 80,
         .min_freq_mhz = 40,
         .light_sleep_enable = true,
     };
@@ -207,6 +222,12 @@ void app_main(void)
        do_zero_cal=false 경로는 07-15 딥슬립 재설계 때 만들어 둔 것을 재활용. */
     int16_t saved_zx = 0, saved_zy = 0, saved_zz = 0;
     bool fast_resume = wdt_guard_fast_resume(&saved_zx, &saved_zy, &saved_zz);
+    if (wdt_guard_safe_mode() && !fast_resume) {
+        /* SAFE(crash-loop 한계 초과): 유효 zero가 없어도 10s 캘리브를 생략하고
+           최대한 빨리 최소광고(10s)로 복귀. zero=0이면 RMS에 DC 오프셋이 실리지만
+           SAFE에선 adv_manager가 고정 cadence라 모션 승격에 쓰이지 않는다. */
+        fast_resume = true;
+    }
 
     ESP_LOGI(TAG, "Start ULP ADXL vibration sampler (200 Hz)%s...",
              fast_resume ? " [fast resume]" : "");
