@@ -22,6 +22,7 @@
 #include "ulp/ulp_init.h"
 #include "ulp_shared.h"
 #include "ble/ble_adv.h"
+#include "sensor/adc_cal.h"
 
 static const char *TAG = "APP_MAIN";
 
@@ -156,6 +157,14 @@ void app_main(void)
     /* GPIO domain must stay powered through light sleep so the ADC pads
        remain valid for ULP between sample cycles. */
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+
+    /* per-chip ADC INL 보정(eFuse curve fitting) 준비. ULP는 raw만 누적하고
+       실제 보정은 메인 CPU가 raw→mV 변환(ble_adv.c)에서 적용한다.
+       eFuse 미소성 시 내부적으로 선형 폴백. ULP ADC와 독립적인 계수 객체라
+       start_ulp 순서와 무관하다. */
+    if (!adc_cal_init()) {
+        ESP_LOGW(TAG, "ADC INL cali off -> temperature uses linear ADC (less accurate)");
+    }
 
     ESP_LOGI(TAG, "Start ULP ADXL vibration sampler (200 Hz)...");
     start_ulp_adc_gpio4();

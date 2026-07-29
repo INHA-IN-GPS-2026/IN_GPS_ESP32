@@ -12,6 +12,7 @@
 #include "services/gap/ble_svc_gap.h"
 
 #include "sensor/sensor.h"
+#include "sensor/adc_cal.h"
 #include "ulp_shared.h"
 
 static const char *TAG = "BLE_ADV";
@@ -95,8 +96,24 @@ static void build_mfg_data(void)
     ulp_shared.sum_ntc2  = 0;
     ulp_shared.ntc_count = 0;
 
-    int16_t temp1 = raw_to_temp_x100(avg_ntc1);
-    int16_t temp2 = raw_to_temp_x100(avg_ntc2);
+    /* INL 보정 파이프라인:
+         avg raw → adc_cal_raw_to_mv (per-chip eFuse curve fitting) → 실전압(mV)
+                 → mv_to_resistance (분압 역산) → R → Steinhart-Hart → 온도.
+       ULP는 raw만 누적하므로 per-chip 곡선 보정은 여기(메인 CPU)에서 적용한다.
+       adc_cal 미가용(eFuse 미소성)이면 내부에서 선형 폴백(INL 미보정)으로 동작. */
+    float v_ntc1 = adc_cal_raw_to_mv(avg_ntc1);
+    float v_ntc2 = adc_cal_raw_to_mv(avg_ntc2);
+    float r_ntc1 = mv_to_resistance(v_ntc1);
+    float r_ntc2 = mv_to_resistance(v_ntc2);
+    int16_t temp1_beta = resistance_to_temp_beta_x100(r_ntc1);
+    int16_t temp2_beta = resistance_to_temp_beta_x100(r_ntc2);
+    int16_t temp1_sh   = resistance_to_temp_steinhart_x100(r_ntc1);
+    int16_t temp2_sh   = resistance_to_temp_steinhart_x100(r_ntc2);
+    /* 재설계: 페이로드 온도 = Steinhart-Hart(+INL 보정) 값. 포맷은 동일
+       (°C×100 int16 LE)이라 게이트웨이 디코딩은 하위호환 유지된다.
+       (Beta로 되돌리려면 아래 두 줄을 *_beta로 교체.) */
+    int16_t temp1 = temp1_sh;
+    int16_t temp2 = temp2_sh;
 
     mfg_data[2]  = (uint8_t)((uint16_t)temp1 & 0xFF);
     mfg_data[3]  = (uint8_t)((uint16_t)temp1 >> 8);
@@ -115,9 +132,12 @@ static void build_mfg_data(void)
        유지해야 함. 크게 떨어지면 한 사이클이 5ms를 넘긴 것 → SHIFT를 낮출 것. */
     ESP_LOGI(TAG, "ADV  RMS X=%u Y=%u Z=%u mg  fs=%u/s  ntc_n=%u  device_id=%u",
              rms_x_mg, rms_y_mg, rms_z_mg, (unsigned)n, (unsigned)ntc_n, ESP_DEVICE_ID);
-    ESP_LOGI(TAG, "therm T1=%.2f T2=%.2f C (raw ntc1=%d ntc2=%d)",
-             temp1 / 100.0f, temp2 / 100.0f,
-             (int)ulp_shared.last_raw_ntc1, (int)ulp_shared.last_raw_ntc2);
+    ESP_LOGI(TAG, "therm T1: beta=%.2f sh=%.2f C R=%.0f ohm v=%.1fmV cal=%d (raw ntc1=%d, avg=%u)",
+             temp1_beta / 100.0f, temp1_sh / 100.0f, r_ntc1, v_ntc1, (int)adc_cal_is_enabled(),
+             (int)ulp_shared.last_raw_ntc1, (unsigned)avg_ntc1);
+    ESP_LOGI(TAG, "therm T2: beta=%.2f sh=%.2f C R=%.0f ohm v=%.1fmV cal=%d (raw ntc2=%d, avg=%u)",
+             temp2_beta / 100.0f, temp2_sh / 100.0f, r_ntc2, v_ntc2, (int)adc_cal_is_enabled(),
+             (int)ulp_shared.last_raw_ntc2, (unsigned)avg_ntc2);
     ESP_LOGI(TAG, "raw: x=%d y=%d z=%d  zero=(%d,%d,%d)  dx=%d dy=%d dz=%d",
              ulp_shared.last_raw_x, ulp_shared.last_raw_y, ulp_shared.last_raw_z,
              ulp_shared.zero_x, ulp_shared.zero_y, ulp_shared.zero_z,
