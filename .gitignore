@@ -6,6 +6,9 @@ sdkconfig.bak
 # Managed components (usually re-generated)
 managed_components/
 
+# Docs/Research
+Docs/
+
 # Python / OS junk
 __pycache__/
 *.pyc
