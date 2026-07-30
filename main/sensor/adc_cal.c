@@ -54,3 +54,37 @@ float adc_cal_raw_to_mv(uint16_t raw)
     /* 폴백: 선형 환산(INL 미보정). */
     return (float)raw / ADC_MAX_RAW * (float)ADC_REF_VOLTAGE_MV;
 }
+
+/* 보간 반폭(코드). 상세 트레이드오프는 adc_cal.h 주석 참고.
+   1로 두면 IDF 원본 곡선을 거의 그대로(1mV 계단 포함) 본다. */
+#ifndef ADC_CAL_INTERP_SPAN
+#define ADC_CAL_INTERP_SPAN 16
+#endif
+
+float adc_cal_raw_frac_to_mv(float raw)
+{
+    if (raw < 0.0f)          raw = 0.0f;
+    if (raw > ADC_MAX_RAW)   raw = ADC_MAX_RAW;
+
+    if (s_handle == NULL) {
+        return raw / ADC_MAX_RAW * (float)ADC_REF_VOLTAGE_MV;
+    }
+
+    /* raw를 사이에 두는 두 점을 잡되, 양 끝단에서는 구간을 안쪽으로 민다. */
+    int lo = (int)raw - ADC_CAL_INTERP_SPAN;
+    int hi = (int)raw + ADC_CAL_INTERP_SPAN;
+    const int max_raw = (int)ADC_MAX_RAW;
+    if (lo < 0)        { lo = 0;       hi = 2 * ADC_CAL_INTERP_SPAN; }
+    if (hi > max_raw)  { hi = max_raw; lo = hi - 2 * ADC_CAL_INTERP_SPAN; }
+    if (lo < 0)        { lo = 0; }
+    if (hi <= lo)      { return adc_cal_raw_to_mv((uint16_t)(raw + 0.5f)); }
+
+    int mv_lo = 0, mv_hi = 0;
+    if (adc_cali_raw_to_voltage(s_handle, lo, &mv_lo) != ESP_OK ||
+        adc_cali_raw_to_voltage(s_handle, hi, &mv_hi) != ESP_OK) {
+        return adc_cal_raw_to_mv((uint16_t)(raw + 0.5f));
+    }
+
+    return (float)mv_lo
+         + (raw - (float)lo) * (float)(mv_hi - mv_lo) / (float)(hi - lo);
+}

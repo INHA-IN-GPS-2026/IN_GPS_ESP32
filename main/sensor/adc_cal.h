@@ -35,3 +35,23 @@ bool adc_cal_is_enabled(void);
  *        없으면 선형 환산(raw/4095·Vref)으로 폴백.
  */
 float adc_cal_raw_to_mv(uint16_t raw);
+
+/**
+ * @brief 소수 raw → 보정 mV. 창 평균이 만든 sub-LSB 정보를 보존한다.
+ *
+ * 왜 필요한가: IDF의 adc_cali_raw_to_voltage()는 **정수 mV**만 돌려준다.
+ * 12dB 감쇠에서 1 LSB ≈ 0.76mV라, 정수 양자화(1mV)가 LSB보다 오히려 거칠다.
+ * ULP 창 평균(200~2000샘플)으로 표준오차를 0.3~0.7 LSB까지 낮춰놔도 정수
+ * 변환에서 그 정보가 통째로 날아간다. S-curve(INL) 보정 품질을 재려면
+ * 잔차를 mV 단위 이하로 봐야 하므로 이 함수가 필요하다.
+ *
+ * 어떻게: raw 주변 ±ADC_CAL_INTERP_SPAN 코드의 두 점을 eFuse 곡선으로 구해
+ * 선형보간한다. span은 트레이드오프다 — 작으면 1mV 양자화가 그대로 남고,
+ * 크면 INL 곡선의 국소 구조가 뭉개진다. 기본 16(=32코드 폭)은 ESP32 S-curve
+ * 주기(수백 코드)보다 충분히 좁으면서 보간 분해능 ~0.05mV를 준다.
+ * 곡선을 날것 그대로 보고 싶으면 ADC_CAL_INTERP_SPAN=1로 빌드할 것.
+ *
+ * @param raw 소수부를 포함한 ADC 코드 (0 ~ 4095)
+ * @return 보정된 ADC 핀 전압(mV, 소수 포함). eFuse 미가용 시 선형 폴백.
+ */
+float adc_cal_raw_frac_to_mv(float raw);

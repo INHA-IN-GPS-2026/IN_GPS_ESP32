@@ -24,9 +24,53 @@ extern volatile ulp_shared_t ulp_shared;
 /* STM32 게이트웨이가 이 ESP를 구분하는 device ID (esp_test 고정값). */
 #define ESP_DEVICE_ID  0x01
 
+/* ============================================================
+ * ADV_EXP_RAW — 칩저항 치환 실험용 페이로드 (S-curve/INL 보정 품질 검증)
+ *
+ * 1 = 실험 포맷(12B), 0 = 운영 포맷(13B). 실험 끝나면 0으로 되돌릴 것.
+ *
+ * 왜 확장이 아니라 교체인가: BLE legacy ADV는 31B가 상한이고
+ *   Flags(3) + Name "IN_GPS"(8) + MfgData(2+N) ≤ 31  →  N ≤ 18
+ * 이라 기존 13B에 raw·mV 8B를 덧붙이면 21B로 3B 초과한다. 저항 치환 중엔
+ * RMS 가속도가 무의미(정지)하고 온도는 raw에서 오프라인 산출이 가능하므로,
+ * 둘을 빼고 실험에 필요한 것만 담으면 12B로 오히려 작아진다.
+ * ============================================================ */
+#ifndef ADV_EXP_RAW
+#define ADV_EXP_RAW 1
+#endif
+
+/* 실험 포맷 식별 태그. 운영 포맷에선 이 자리가 temp1 하위바이트라
+   파서가 두 포맷을 반드시 구분해야 한다. */
+#define ADV_EXP_TAG  0xE1
+
+#if ADV_EXP_RAW
 /*
- * Manufacturer Specific Data (13바이트) — ★게이트웨이(STM32WBA52) 하위호환:
- * Analog 1.0.0에서도 포맷 불변. 적응형 광고는 '주기'만 바꾸고 내용은 동일.
+ * Manufacturer Specific Data (12바이트) — 실험 포맷 v1
+ *   [0..1]   company ID (LE) = 0x1234
+ *   [2]      format tag = 0xE1
+ *   [3..4]   raw1_x16 (uint16 LE)   TH1 창평균 ADC 코드,  raw = 값 / 16.0
+ *   [5..6]   raw2_x16 (uint16 LE)   TH2
+ *   [7..8]   mv1_x16  (uint16 LE)   eFuse 보정 전압,      mV  = 값 / 16.0
+ *   [9..10]  mv2_x16  (uint16 LE)
+ *   [11]     device ID
+ *
+ * 디코딩:  raw = u16 / 16.0   (0 ~ 4095.94, 분해능 0.0625 LSB)
+ *          mV  = u16 / 16.0   (0 ~ 4095.94, 분해능 0.0625 mV)
+ * 분석:    알려진 치환저항의 이상 전압 대비 mV 잔차를 raw에 대해 플롯하면
+ *          eFuse 곡선이 S-curve를 얼마나 걷어냈는지 그대로 보인다.
+ */
+static uint8_t mfg_data[12] = {
+    0x34, 0x12,
+    ADV_EXP_TAG,
+    0x00, 0x00,
+    0x00, 0x00,
+    0x00, 0x00,
+    0x00, 0x00,
+    ESP_DEVICE_ID
+};
+#else
+/*
+ * Manufacturer Specific Data (13바이트) — 운영 포맷(게이트웨이 하위호환)
  *   [0..1]   company ID (LE) = 0x1234
  *   [2..3]   temp1   (°C × 100, int16 LE)   GPIO3 NTC (TH1)
  *   [4..5]   temp2   (°C × 100, int16 LE)   GPIO4 NTC (TH2)
@@ -35,7 +79,7 @@ extern volatile ulp_shared_t ulp_shared;
  *   [10..11] rms_z   (mg, uint16 LE)
  *   [12]     device ID (esp_test 고정값)
  */
-static uint8_t mfg_data[] = {
+static uint8_t mfg_data[13] = {
     0x34, 0x12,
     0x00, 0x00,
     0x00, 0x00,
@@ -44,6 +88,16 @@ static uint8_t mfg_data[] = {
     0x00, 0x00,
     ESP_DEVICE_ID
 };
+#endif
+
+/* float → u16 고정소수(×16) 포화 변환. 4095.94를 넘으면 클램프. */
+static inline uint16_t to_x16(float v)
+{
+    if (v <= 0.0f) return 0;
+    float s = v * 16.0f + 0.5f;
+    if (s >= 65535.0f) return 65535u;
+    return (uint16_t)s;
+}
 
 /* 최신 측정 스냅샷 — adv_manager 상태 전이 입력용 */
 typedef struct {
@@ -98,11 +152,20 @@ static void build_mfg_data(adv_meas_t *out)
        ntc_count==0(부팅 직후 경계)이면 최신 순시값으로 폴백. 최대 1샘플 race 손실은 무시.
        순시 1샘플 대신 창 평균 → 온도 지터 √N 감소, 추가 지연 없음.
        (STATIONARY 3s 창이면 N~600 → 노이즈는 오히려 더 줄어든다.) */
+    /* ★창 평균을 ×16 고정소수로 계산해 sub-LSB 정보를 보존한다.
+       정수 나눗셈(sum/n)은 평균이 힘들게 얻은 소수부를 통째로 버린다 —
+       200~2000샘플 평균의 표준오차가 0.3~0.7 LSB인데 1 LSB로 절삭하면
+       S-curve 잔차를 볼 수 없다.
+       오버플로: 최대 2000샘플 × 4095 × 16 = 1.31e8 < 2^32. 안전. */
     uint32_t ntc_n = ulp_shared.ntc_count;
-    uint16_t avg_ntc1 = ntc_n ? (uint16_t)(ulp_shared.sum_ntc1 / ntc_n)
-                              : (uint16_t)ulp_shared.last_raw_ntc1;
-    uint16_t avg_ntc2 = ntc_n ? (uint16_t)(ulp_shared.sum_ntc2 / ntc_n)
-                              : (uint16_t)ulp_shared.last_raw_ntc2;
+    float raw1_f = ntc_n
+        ? (float)((ulp_shared.sum_ntc1 * 16U) / ntc_n) / 16.0f
+        : (float)ulp_shared.last_raw_ntc1;
+    float raw2_f = ntc_n
+        ? (float)((ulp_shared.sum_ntc2 * 16U) / ntc_n) / 16.0f
+        : (float)ulp_shared.last_raw_ntc2;
+    uint16_t avg_ntc1 = (uint16_t)(raw1_f + 0.5f);
+    uint16_t avg_ntc2 = (uint16_t)(raw2_f + 0.5f);
     ulp_shared.sum_ntc1  = 0;
     ulp_shared.sum_ntc2  = 0;
     ulp_shared.ntc_count = 0;
@@ -112,13 +175,30 @@ static void build_mfg_data(adv_meas_t *out)
                  → mv_to_resistance (분압 역산) → R → Steinhart-Hart → 온도.
        ULP는 raw만 누적하므로 per-chip 곡선 보정은 여기(메인 CPU)에서 적용한다.
        adc_cal 미가용(eFuse 미소성)이면 내부에서 선형 폴백(INL 미보정)으로 동작. */
-    float v_ntc1 = adc_cal_raw_to_mv(avg_ntc1);
-    float v_ntc2 = adc_cal_raw_to_mv(avg_ntc2);
+    /* 소수 raw로 보정 — adc_cali의 정수 mV 양자화(1mV > 1LSB 0.76mV)를
+       인접 코드 선형보간으로 우회한다. 상세는 adc_cal.h 주석. */
+    float v_ntc1 = adc_cal_raw_frac_to_mv(raw1_f);
+    float v_ntc2 = adc_cal_raw_frac_to_mv(raw2_f);
     float r_ntc1 = mv_to_resistance(v_ntc1);
     float r_ntc2 = mv_to_resistance(v_ntc2);
     int16_t temp1 = resistance_to_temp_steinhart_x100(r_ntc1);
     int16_t temp2 = resistance_to_temp_steinhart_x100(r_ntc2);
 
+#if ADV_EXP_RAW
+    uint16_t raw1_x16 = to_x16(raw1_f);
+    uint16_t raw2_x16 = to_x16(raw2_f);
+    uint16_t mv1_x16  = to_x16(v_ntc1);
+    uint16_t mv2_x16  = to_x16(v_ntc2);
+    mfg_data[3]  = (uint8_t)(raw1_x16 & 0xFF);
+    mfg_data[4]  = (uint8_t)(raw1_x16 >> 8);
+    mfg_data[5]  = (uint8_t)(raw2_x16 & 0xFF);
+    mfg_data[6]  = (uint8_t)(raw2_x16 >> 8);
+    mfg_data[7]  = (uint8_t)(mv1_x16 & 0xFF);
+    mfg_data[8]  = (uint8_t)(mv1_x16 >> 8);
+    mfg_data[9]  = (uint8_t)(mv2_x16 & 0xFF);
+    mfg_data[10] = (uint8_t)(mv2_x16 >> 8);
+    (void)rms_x_mg; (void)rms_y_mg; (void)rms_z_mg;
+#else
     mfg_data[2]  = (uint8_t)((uint16_t)temp1 & 0xFF);
     mfg_data[3]  = (uint8_t)((uint16_t)temp1 >> 8);
     mfg_data[4]  = (uint8_t)((uint16_t)temp2 & 0xFF);
@@ -129,6 +209,7 @@ static void build_mfg_data(adv_meas_t *out)
     mfg_data[9]  = (uint8_t)(rms_y_mg >> 8);
     mfg_data[10] = (uint8_t)(rms_z_mg & 0xFF);
     mfg_data[11] = (uint8_t)(rms_z_mg >> 8);
+#endif
 
     if (out) {
         uint16_t m = rms_x_mg;
@@ -146,6 +227,13 @@ static void build_mfg_data(adv_meas_t *out)
     ESP_LOGD(TAG, "T1=%.2fC R=%.0f v=%.1fmV | T2=%.2fC R=%.0f v=%.1fmV cal=%d",
              temp1 / 100.0f, r_ntc1, v_ntc1, temp2 / 100.0f, r_ntc2, v_ntc2,
              (int)adc_cal_is_enabled());
+#if ADV_EXP_RAW
+    /* 실험 중엔 INFO로 올려 UART로도 같은 값을 받아 BLE 수신본과 대조한다.
+       (BLE_ADV 태그는 app_main에서 INFO까지 열려 있음.) */
+    ESP_LOGI(TAG, "EXP n=%u raw1=%.4f mv1=%.4f | raw2=%.4f mv2=%.4f cal=%d",
+             (unsigned)ntc_n, raw1_f, v_ntc1, raw2_f, v_ntc2,
+             (int)adc_cal_is_enabled());
+#endif
 }
 
 /* mfg_data → BLE advertising payload (adv_data 버퍼)로 인코딩.
