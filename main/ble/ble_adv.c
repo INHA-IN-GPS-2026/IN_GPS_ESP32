@@ -24,26 +24,8 @@ extern volatile ulp_shared_t ulp_shared;
 /* STM32 게이트웨이가 이 ESP를 구분하는 device ID (esp_test 고정값). */
 #define ESP_DEVICE_ID  0x01
 
-/* ============================================================
- * ADV_EXP_RAW — 칩저항 치환 실험용 페이로드 (S-curve/INL 보정 품질 검증)
- *
- * 1 = 실험 포맷(12B), 0 = 운영 포맷(13B). 실험 끝나면 0으로 되돌릴 것.
- *
- * 왜 확장이 아니라 교체인가: BLE legacy ADV는 31B가 상한이고
- *   Flags(3) + Name "IN_GPS"(8) + MfgData(2+N) ≤ 31  →  N ≤ 18
- * 이라 기존 13B에 raw·mV 8B를 덧붙이면 21B로 3B 초과한다. 저항 치환 중엔
- * RMS 가속도가 무의미(정지)하고 온도는 raw에서 오프라인 산출이 가능하므로,
- * 둘을 빼고 실험에 필요한 것만 담으면 12B로 오히려 작아진다.
- * ============================================================ */
-#ifndef ADV_EXP_RAW
-#define ADV_EXP_RAW 1
-#endif
-
 /*
- * Manufacturer Specific Data — 운영 13B [0..12]는 오프셋·의미 모두 불변.
- * 실험 필드는 뒤에 append만 하므로 게이트웨이(STM32WBA52) 파서가 오프셋으로
- * 읽는 한 그대로 동작한다.
- *
+ * Manufacturer Specific Data (13바이트)
  *   [0..1]   company ID (LE) = 0x1234
  *   [2..3]   temp1   (°C × 100, int16 LE)   GPIO3 NTC (TH1)
  *   [4..5]   temp2   (°C × 100, int16 LE)   GPIO4 NTC (TH2)
@@ -51,23 +33,20 @@ extern volatile ulp_shared_t ulp_shared;
  *   [8..9]   rms_y   (mg, uint16 LE)
  *   [10..11] rms_z   (mg, uint16 LE)
  *   [12]     device ID (esp_test 고정값)
- * --- ADV_EXP_RAW=1 일 때만 ---
- *   [13..14] raw1_x16 (uint16 LE)   TH1 창평균 ADC 코드
- *   [15..16] raw2_x16 (uint16 LE)   TH2
  *
- * 디코딩:  raw = u16 / 16.0   (0 ~ 4095.94, 분해능 0.0625 LSB)
- * 용도:    알려진 치환저항의 이상 전압 대비 raw를 플롯 → S-curve 피팅 figure.
- *
- * ⚠ 게이트웨이가 mfg_data 길이를 13으로 **정확히 비교**하고 있으면 17B 프레임을
- *   버린다. 오프셋 기반 파싱(길이는 >=13 검사)인지 STM32 쪽을 한 번 확인할 것.
+ * ★★★ 임시(2026-07-16, 사용자 요청으로 원복 예정) ★★★
+ *   게이트웨이 MQTT 매핑 손대기 번거로워서, 지금은 위 [6..11]에 실제로
+ *   rms_x/y/z 대신 avg_raw1/avg_raw2(NTC raw)를 실어보냄. 노트북 없이
+ *   BLE 스캐너로 캘리브 raw값 바로 확인하려는 목적. 게이트웨이는 이 6바이트를
+ *   여전히 "RMS"로 오해하고 MQTT로 흘려보내지만 이 기간 동안은 무시.
+ *   [6..7]   raw1_int  (avg_raw1 정수부, uint16 LE)
+ *   [8..9]   raw2_int  (avg_raw2 정수부, uint16 LE)
+ *   [10]     raw1_frac (avg_raw1 소수부×100, 0~99, uint8)
+ *   [11]     raw2_frac (avg_raw2 소수부×100, 0~99, uint8)
+ *   되돌릴 때: build_mfg_data() 안의 "★임시" 블록 삭제하고 그 위에 주석 처리된
+ *   원래 rms_x/y/z 대입 블록 주석만 해제하면 됨.
  */
-#if ADV_EXP_RAW
-#define MFG_LEN  17
-#else
-#define MFG_LEN  13
-#endif
-
-static uint8_t mfg_data[MFG_LEN] = {
+static uint8_t mfg_data[] = {
     0x34, 0x12,
     0x00, 0x00,
     0x00, 0x00,
@@ -75,17 +54,7 @@ static uint8_t mfg_data[MFG_LEN] = {
     0x00, 0x00,
     0x00, 0x00,
     ESP_DEVICE_ID
-    /* 나머지(실험 필드)는 0으로 자동 초기화 */
 };
-
-/* float → u16 고정소수(×16) 포화 변환. 4095.94를 넘으면 클램프. */
-static inline uint16_t to_x16(float v)
-{
-    if (v <= 0.0f) return 0;
-    float s = v * 16.0f + 0.5f;
-    if (s >= 65535.0f) return 65535u;
-    return (uint16_t)s;
-}
 
 /* 최신 측정 스냅샷 — adv_manager 상태 전이 입력용 */
 typedef struct {
@@ -163,36 +132,44 @@ static void build_mfg_data(adv_meas_t *out)
                  → mv_to_resistance (분압 역산) → R → Steinhart-Hart → 온도.
        ULP는 raw만 누적하므로 per-chip 곡선 보정은 여기(메인 CPU)에서 적용한다.
        adc_cal 미가용(eFuse 미소성)이면 내부에서 선형 폴백(INL 미보정)으로 동작. */
-    /* 소수 raw로 보정 — adc_cali의 정수 mV 양자화(1mV > 1LSB 0.76mV)를
-       인접 코드 선형보간으로 우회한다. 상세는 adc_cal.h 주석. */
-    float v_ntc1 = adc_cal_raw_frac_to_mv(raw1_f);
-    float v_ntc2 = adc_cal_raw_frac_to_mv(raw2_f);
+    float v_ntc1 = adc_cal_raw_to_mv(avg_ntc1);
+    float v_ntc2 = adc_cal_raw_to_mv(avg_ntc2);
     float r_ntc1 = mv_to_resistance(v_ntc1);
     float r_ntc2 = mv_to_resistance(v_ntc2);
     int16_t temp1 = resistance_to_temp_steinhart_x100(r_ntc1);
     int16_t temp2 = resistance_to_temp_steinhart_x100(r_ntc2);
 
-    /* 운영 필드 — 게이트웨이 계약. 오프셋 불변. */
     mfg_data[2]  = (uint8_t)((uint16_t)temp1 & 0xFF);
     mfg_data[3]  = (uint8_t)((uint16_t)temp1 >> 8);
     mfg_data[4]  = (uint8_t)((uint16_t)temp2 & 0xFF);
     mfg_data[5]  = (uint8_t)((uint16_t)temp2 >> 8);
+
+    /* --- 원래 rms_x/y/z 대입 (원복 시 이 주석만 해제) ---
     mfg_data[6]  = (uint8_t)(rms_x_mg & 0xFF);
     mfg_data[7]  = (uint8_t)(rms_x_mg >> 8);
     mfg_data[8]  = (uint8_t)(rms_y_mg & 0xFF);
     mfg_data[9]  = (uint8_t)(rms_y_mg >> 8);
     mfg_data[10] = (uint8_t)(rms_z_mg & 0xFF);
     mfg_data[11] = (uint8_t)(rms_z_mg >> 8);
+    */
 
-#if ADV_EXP_RAW
-    /* 실험 필드 — S-curve 피팅용 창평균 raw(소수 포함) */
-    uint16_t raw1_x16 = to_x16(raw1_f);
-    uint16_t raw2_x16 = to_x16(raw2_f);
-    mfg_data[13] = (uint8_t)(raw1_x16 & 0xFF);
-    mfg_data[14] = (uint8_t)(raw1_x16 >> 8);
-    mfg_data[15] = (uint8_t)(raw2_x16 & 0xFF);
-    mfg_data[16] = (uint8_t)(raw2_x16 >> 8);
-#endif
+    /* ★임시(2026-07-16): [6..11]을 avg_raw1/avg_raw2로 갈아끼움.
+       BLE 스캐너에서 "RMS X/Y" 자리에 raw 정수부, "RMS Z" 자리에 두 소수부가
+       보인다. 소수부는 ×100(0~99)이라 분해능 0.01 LSB — 창평균(200~2000샘플)의
+       표준오차 0.3~0.7 LSB보다 충분히 곱다. 원복 방법은 위 헤더 주석 참고. */
+    uint16_t raw1_int  = (uint16_t)raw1_f;
+    uint16_t raw2_int  = (uint16_t)raw2_f;
+    uint8_t  raw1_frac = (uint8_t)((raw1_f - (float)raw1_int) * 100.0f);
+    uint8_t  raw2_frac = (uint8_t)((raw2_f - (float)raw2_int) * 100.0f);
+    if (raw1_frac > 99) raw1_frac = 99;
+    if (raw2_frac > 99) raw2_frac = 99;
+    mfg_data[6]  = (uint8_t)(raw1_int & 0xFF);
+    mfg_data[7]  = (uint8_t)(raw1_int >> 8);
+    mfg_data[8]  = (uint8_t)(raw2_int & 0xFF);
+    mfg_data[9]  = (uint8_t)(raw2_int >> 8);
+    mfg_data[10] = raw1_frac;
+    mfg_data[11] = raw2_frac;
+    (void)rms_x_mg; (void)rms_y_mg; (void)rms_z_mg;
 
     if (out) {
         uint16_t m = rms_x_mg;
@@ -210,13 +187,10 @@ static void build_mfg_data(adv_meas_t *out)
     ESP_LOGD(TAG, "T1=%.2fC R=%.0f v=%.1fmV | T2=%.2fC R=%.0f v=%.1fmV cal=%d",
              temp1 / 100.0f, r_ntc1, v_ntc1, temp2 / 100.0f, r_ntc2, v_ntc2,
              (int)adc_cal_is_enabled());
-#if ADV_EXP_RAW
-    /* 실험 중엔 INFO로 올려 UART로도 같은 값을 받아 BLE 수신본과 대조한다.
-       (BLE_ADV 태그는 app_main에서 INFO까지 열려 있음.) */
-    ESP_LOGI(TAG, "EXP n=%u raw1=%.4f mv1=%.4f | raw2=%.4f mv2=%.4f cal=%d",
-             (unsigned)ntc_n, raw1_f, v_ntc1, raw2_f, v_ntc2,
-             (int)adc_cal_is_enabled());
-#endif
+    /* ★임시(2026-07-16): UART가 연결돼 있을 땐 BLE 스캐너로 읽은 값과
+       대조할 수 있게 raw를 그대로 한 줄 더 찍는다. 원복 시 같이 삭제. */
+    ESP_LOGD(TAG, "EXP raw1=%.2f raw2=%.2f (n=%u)",
+             raw1_f, raw2_f, (unsigned)ntc_n);
 }
 
 /* mfg_data → BLE advertising payload (adv_data 버퍼)로 인코딩.
