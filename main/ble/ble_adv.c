@@ -39,38 +39,11 @@ extern volatile ulp_shared_t ulp_shared;
 #define ADV_EXP_RAW 1
 #endif
 
-/* 실험 포맷 식별 태그. 운영 포맷에선 이 자리가 temp1 하위바이트라
-   파서가 두 포맷을 반드시 구분해야 한다. */
-#define ADV_EXP_TAG  0xE1
-
-#if ADV_EXP_RAW
 /*
- * Manufacturer Specific Data (12바이트) — 실험 포맷 v1
- *   [0..1]   company ID (LE) = 0x1234
- *   [2]      format tag = 0xE1
- *   [3..4]   raw1_x16 (uint16 LE)   TH1 창평균 ADC 코드,  raw = 값 / 16.0
- *   [5..6]   raw2_x16 (uint16 LE)   TH2
- *   [7..8]   mv1_x16  (uint16 LE)   eFuse 보정 전압,      mV  = 값 / 16.0
- *   [9..10]  mv2_x16  (uint16 LE)
- *   [11]     device ID
+ * Manufacturer Specific Data — 운영 13B [0..12]는 오프셋·의미 모두 불변.
+ * 실험 필드는 뒤에 append만 하므로 게이트웨이(STM32WBA52) 파서가 오프셋으로
+ * 읽는 한 그대로 동작한다.
  *
- * 디코딩:  raw = u16 / 16.0   (0 ~ 4095.94, 분해능 0.0625 LSB)
- *          mV  = u16 / 16.0   (0 ~ 4095.94, 분해능 0.0625 mV)
- * 분석:    알려진 치환저항의 이상 전압 대비 mV 잔차를 raw에 대해 플롯하면
- *          eFuse 곡선이 S-curve를 얼마나 걷어냈는지 그대로 보인다.
- */
-static uint8_t mfg_data[12] = {
-    0x34, 0x12,
-    ADV_EXP_TAG,
-    0x00, 0x00,
-    0x00, 0x00,
-    0x00, 0x00,
-    0x00, 0x00,
-    ESP_DEVICE_ID
-};
-#else
-/*
- * Manufacturer Specific Data (13바이트) — 운영 포맷(게이트웨이 하위호환)
  *   [0..1]   company ID (LE) = 0x1234
  *   [2..3]   temp1   (°C × 100, int16 LE)   GPIO3 NTC (TH1)
  *   [4..5]   temp2   (°C × 100, int16 LE)   GPIO4 NTC (TH2)
@@ -78,8 +51,23 @@ static uint8_t mfg_data[12] = {
  *   [8..9]   rms_y   (mg, uint16 LE)
  *   [10..11] rms_z   (mg, uint16 LE)
  *   [12]     device ID (esp_test 고정값)
+ * --- ADV_EXP_RAW=1 일 때만 ---
+ *   [13..14] raw1_x16 (uint16 LE)   TH1 창평균 ADC 코드
+ *   [15..16] raw2_x16 (uint16 LE)   TH2
+ *
+ * 디코딩:  raw = u16 / 16.0   (0 ~ 4095.94, 분해능 0.0625 LSB)
+ * 용도:    알려진 치환저항의 이상 전압 대비 raw를 플롯 → S-curve 피팅 figure.
+ *
+ * ⚠ 게이트웨이가 mfg_data 길이를 13으로 **정확히 비교**하고 있으면 17B 프레임을
+ *   버린다. 오프셋 기반 파싱(길이는 >=13 검사)인지 STM32 쪽을 한 번 확인할 것.
  */
-static uint8_t mfg_data[13] = {
+#if ADV_EXP_RAW
+#define MFG_LEN  17
+#else
+#define MFG_LEN  13
+#endif
+
+static uint8_t mfg_data[MFG_LEN] = {
     0x34, 0x12,
     0x00, 0x00,
     0x00, 0x00,
@@ -87,8 +75,8 @@ static uint8_t mfg_data[13] = {
     0x00, 0x00,
     0x00, 0x00,
     ESP_DEVICE_ID
+    /* 나머지(실험 필드)는 0으로 자동 초기화 */
 };
-#endif
 
 /* float → u16 고정소수(×16) 포화 변환. 4095.94를 넘으면 클램프. */
 static inline uint16_t to_x16(float v)
@@ -184,21 +172,7 @@ static void build_mfg_data(adv_meas_t *out)
     int16_t temp1 = resistance_to_temp_steinhart_x100(r_ntc1);
     int16_t temp2 = resistance_to_temp_steinhart_x100(r_ntc2);
 
-#if ADV_EXP_RAW
-    uint16_t raw1_x16 = to_x16(raw1_f);
-    uint16_t raw2_x16 = to_x16(raw2_f);
-    uint16_t mv1_x16  = to_x16(v_ntc1);
-    uint16_t mv2_x16  = to_x16(v_ntc2);
-    mfg_data[3]  = (uint8_t)(raw1_x16 & 0xFF);
-    mfg_data[4]  = (uint8_t)(raw1_x16 >> 8);
-    mfg_data[5]  = (uint8_t)(raw2_x16 & 0xFF);
-    mfg_data[6]  = (uint8_t)(raw2_x16 >> 8);
-    mfg_data[7]  = (uint8_t)(mv1_x16 & 0xFF);
-    mfg_data[8]  = (uint8_t)(mv1_x16 >> 8);
-    mfg_data[9]  = (uint8_t)(mv2_x16 & 0xFF);
-    mfg_data[10] = (uint8_t)(mv2_x16 >> 8);
-    (void)rms_x_mg; (void)rms_y_mg; (void)rms_z_mg;
-#else
+    /* 운영 필드 — 게이트웨이 계약. 오프셋 불변. */
     mfg_data[2]  = (uint8_t)((uint16_t)temp1 & 0xFF);
     mfg_data[3]  = (uint8_t)((uint16_t)temp1 >> 8);
     mfg_data[4]  = (uint8_t)((uint16_t)temp2 & 0xFF);
@@ -209,6 +183,15 @@ static void build_mfg_data(adv_meas_t *out)
     mfg_data[9]  = (uint8_t)(rms_y_mg >> 8);
     mfg_data[10] = (uint8_t)(rms_z_mg & 0xFF);
     mfg_data[11] = (uint8_t)(rms_z_mg >> 8);
+
+#if ADV_EXP_RAW
+    /* 실험 필드 — S-curve 피팅용 창평균 raw(소수 포함) */
+    uint16_t raw1_x16 = to_x16(raw1_f);
+    uint16_t raw2_x16 = to_x16(raw2_f);
+    mfg_data[13] = (uint8_t)(raw1_x16 & 0xFF);
+    mfg_data[14] = (uint8_t)(raw1_x16 >> 8);
+    mfg_data[15] = (uint8_t)(raw2_x16 & 0xFF);
+    mfg_data[16] = (uint8_t)(raw2_x16 >> 8);
 #endif
 
     if (out) {
