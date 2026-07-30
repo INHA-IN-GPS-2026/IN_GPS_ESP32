@@ -12,7 +12,7 @@
  *   policy(u8: 0=FIXED,1=ADAPTIVE=기본), mv_ms(u16,1000), st_ms(u16,3000),
  *   quiet_ms(u32,300000), mot_mg(u16,25), dt_x100(u16,50),
  *   name(u8,1=광고에 이름 포함=기본; 0이면 제거로 TX 시간 단축),
- *   tx_dbm(i8,0; -12..+9, 3dB 단위)
+ *   tx_dbm(i8, 기본 +9 = 기존 컨트롤러 기본값 유지; -24..+20, 3dB 단위)
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -45,7 +45,8 @@ bool adv_manager_take_itvl_changed(void);
 /** 광고 AD에 디바이스 이름 포함 여부 (knob advm/name). */
 bool adv_manager_name_in_adv(void);
 
-/** TX 파워 knob 적용 (esp_ble_tx_power_set). 컨트롤러 기동 후(on_sync) 호출. */
+/** TX 파워 knob 적용 (esp_ble_tx_power_set). 컨트롤러 기동 후(on_sync) 호출.
+ *  기본 +9dBm, 상한 +20dBm. 컨트롤러가 거부하면 한 단계씩 낮춰 재시도한다. */
 void adv_manager_apply_tx_power(void);
 
 /** 보관 모드: 광고 중단 + 딥슬립(7µA). 웨이크 소스 없음 — EN/전원 재인가로만 복귀.

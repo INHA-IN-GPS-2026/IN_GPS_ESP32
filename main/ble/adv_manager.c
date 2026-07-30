@@ -21,6 +21,15 @@ static const char *TAG = "ADV_MGR";
 #define ADVM_SAFE_MS        10000
 #define ADVM_ITVL_MAX_UNITS 0x4000   /* BLE 스펙 상한 10.24s */
 
+#ifndef ADVM_DEF_TX_DBM
+#define ADVM_DEF_TX_DBM     9
+#endif
+
+#ifndef ADVM_MAX_TX_DBM
+#define ADVM_MAX_TX_DBM     20
+#endif
+#define ADVM_MIN_TX_DBM     (-24)
+
 static struct {
     uint8_t  policy;
     uint16_t mv_ms, st_ms;
@@ -67,7 +76,7 @@ void adv_manager_init(void)
     s_cfg.mot_mg      = ADVM_DEF_MOT_MG;
     s_cfg.dt_x100     = ADVM_DEF_DT_X100;
     s_cfg.name_in_adv = 1;
-    s_cfg.tx_dbm      = 0;
+    s_cfg.tx_dbm      = ADVM_DEF_TX_DBM;
 
     nvs_handle_t h;
     if (nvs_open("advm", NVS_READONLY, &h) == ESP_OK) {
@@ -84,6 +93,8 @@ void adv_manager_init(void)
     /* 방어: 인터벌 하한 100ms(스펙 20ms지만 전력상 의미 없음), 상한 10.24s */
     if (s_cfg.mv_ms < 100)  s_cfg.mv_ms = 100;
     if (s_cfg.st_ms < s_cfg.mv_ms) s_cfg.st_ms = s_cfg.mv_ms;
+    if (s_cfg.tx_dbm > ADVM_MAX_TX_DBM) s_cfg.tx_dbm = ADVM_MAX_TX_DBM;
+    if (s_cfg.tx_dbm < ADVM_MIN_TX_DBM) s_cfg.tx_dbm = ADVM_MIN_TX_DBM;
 
     if (wdt_guard_safe_mode()) {
         s_state = ADVM_SAFE;
@@ -156,24 +167,66 @@ bool adv_manager_take_itvl_changed(void)
 
 bool adv_manager_name_in_adv(void)   { return s_cfg.name_in_adv != 0; }
 
+/* dBm ↔ esp_power_level_t 사다리 (오름차순).
+   ESP32-S3는 esp32c3 계열 공용 esp_bt.h를 쓰며 N24..P20을 3dB 간격으로 제공.
+   (sdkconfig의 CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_EFF=11 == P9와 일치.) */
+typedef struct { int8_t dbm; esp_power_level_t lvl; } advm_pwr_step_t;
+static const advm_pwr_step_t s_pwr_ladder[] = {
+    { -24, ESP_PWR_LVL_N24 }, { -21, ESP_PWR_LVL_N21 },
+    { -18, ESP_PWR_LVL_N18 }, { -15, ESP_PWR_LVL_N15 },
+    { -12, ESP_PWR_LVL_N12 }, {  -9, ESP_PWR_LVL_N9  },
+    {  -6, ESP_PWR_LVL_N6  }, {  -3, ESP_PWR_LVL_N3  },
+    {   0, ESP_PWR_LVL_N0  }, {   3, ESP_PWR_LVL_P3  },
+    {   6, ESP_PWR_LVL_P6  }, {   9, ESP_PWR_LVL_P9  },
+    {  12, ESP_PWR_LVL_P12 }, {  15, ESP_PWR_LVL_P15 },
+    {  18, ESP_PWR_LVL_P18 }, {  20, ESP_PWR_LVL_P20 },
+};
+#define ADVM_PWR_STEPS (sizeof(s_pwr_ladder)/sizeof(s_pwr_ladder[0]))
+
 void adv_manager_apply_tx_power(void)
 {
-    /* 0dBm 기본: WBA52 감도(-96dBm@1M) 기준 30m 링크버짓 96dB.
-       실측 30m RSSI < -80dBm이면 NVS advm/tx_dbm을 +3/+6으로 상향(설계문서 4절). */
-    esp_power_level_t lvl;
+    /* 기본 +9dBm(= 기존 컨트롤러 기본값 유지). 커버리지가 모자라면 NVS
+       advm/tx_dbm 또는 ADVM_DEF_TX_DBM으로 +12/+15/+18/+20까지 올릴 수 있다.
+       ⚠ 올리기 전에 링크버짓부터 확인할 것: 30m 목표에서 초과손실이 20dB를
+       넘으면 안테나/정합 문제이지 파워 문제가 아니며, 파워로는 못 메운다.
+       ⚠ +9 초과는 TX 피크전류 급증 → LS14500 brownout 위험(BOD 설정 확인)과
+       평균전류 상승(1년 목표 잠식)을 동반한다. */
     int8_t d = s_cfg.tx_dbm;
-    if      (d <= -12) lvl = ESP_PWR_LVL_N12;
-    else if (d <= -9)  lvl = ESP_PWR_LVL_N9;
-    else if (d <= -6)  lvl = ESP_PWR_LVL_N6;
-    else if (d <= -3)  lvl = ESP_PWR_LVL_N3;
-    else if (d <= 0)   lvl = ESP_PWR_LVL_N0;
-    else if (d <= 3)   lvl = ESP_PWR_LVL_P3;
-    else if (d <= 6)   lvl = ESP_PWR_LVL_P6;
-    else               lvl = ESP_PWR_LVL_P9;
-    esp_err_t e1 = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, lvl);
-    esp_err_t e2 = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, lvl);
-    ESP_LOGI(TAG, "TX power %ddBm -> lvl=%d (adv=%d, def=%d)",
-             (int)d, (int)lvl, (int)e1, (int)e2);
+
+    /* 요청값 이하 중 가장 높은 단계 선택 */
+    int idx = 0;
+    for (int i = 0; i < (int)ADVM_PWR_STEPS; i++) {
+        if (s_pwr_ladder[i].dbm <= d) idx = i;
+    }
+
+    /* 컨트롤러가 해당 단계를 거부하면(타깃/IDF에 따라 상위 단계 미지원 가능)
+       한 단계씩 낮추며 재시도 — 무설정으로 남는 것보다 낫다. */
+    esp_err_t err = ESP_FAIL;
+    while (idx >= 0) {
+        esp_power_level_t lvl = s_pwr_ladder[idx].lvl;
+        err = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, lvl);
+        if (err == ESP_OK) {
+            esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, lvl);
+            break;
+        }
+        ESP_LOGW(TAG, "TX power %ddBm rejected (err=%d), stepping down",
+                 (int)s_pwr_ladder[idx].dbm, (int)err);
+        idx--;
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "TX power set failed entirely — controller default in use");
+        return;
+    }
+
+    int8_t applied = s_pwr_ladder[idx].dbm;
+    ESP_LOGI(TAG, "TX power: requested %ddBm, applied %ddBm (lvl=%d, readback=%d)",
+             (int)d, (int)applied, (int)s_pwr_ladder[idx].lvl,
+             (int)esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_ADV));
+    if (applied > 9) {
+        ESP_LOGW(TAG, "TX >+9dBm: check BOD/brownout margin (LS14500 high-ESR)"
+                      " and re-verify battery budget");
+    }
 }
 
 void adv_manager_enter_storage(void)
