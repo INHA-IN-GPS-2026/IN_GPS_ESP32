@@ -22,7 +22,7 @@ static const char *TAG = "ADV_MGR";
 #define ADVM_ITVL_MAX_UNITS 0x4000   /* BLE 스펙 상한 10.24s */
 
 #ifndef ADVM_DEF_TX_DBM
-#define ADVM_DEF_TX_DBM     9
+#define ADVM_DEF_TX_DBM     15
 #endif
 
 #ifndef ADVM_MAX_TX_DBM
