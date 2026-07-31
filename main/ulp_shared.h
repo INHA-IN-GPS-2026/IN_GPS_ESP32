@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define ULP_MAGIC   0x56494221u  // "!BIV"
-#define ULP_VERSION 2
+#define ULP_VERSION 3
 
 /* === ADXL raw 캡처(진단용) ===========================================
    1로 두면 ULP가 매 사이클 raw(X/Y/Z)를 링버퍼에 적재하고, 메인 CPU가
@@ -29,7 +29,7 @@
    ULP RISC-V엔 하드웨어 나눗셈이 없으므로 평균은 시프트로 처리한다 →
    N은 반드시 2의 거듭제곱(SHIFT로 지정). SHIFT=3 → N=8, SHIFT=4 → N=16. */
 #ifndef ADXL_OVERSAMPLE_SHIFT
-#define ADXL_OVERSAMPLE_SHIFT 0
+#define ADXL_OVERSAMPLE_SHIFT 3   /* N=8 → √8≈2.8× SAR 잡음↓. app 로그 fs가 ~200/s 유지되는지 확인, 미달 시 2로. */
 #endif
 #define ADXL_OVERSAMPLE_N (1u << ADXL_OVERSAMPLE_SHIFT)
 
@@ -61,15 +61,30 @@ typedef struct {
     uint32_t sum_sq_z;
     uint32_t sample_count;
 
+    /* ULP → main: dx(=raw-zero)의 단순 합. 윈도우별 평균(DC) 산출용.
+       main이 분산 = sum_sq/n - (sum_dx/n)^2 로 자세 독립 RMS를 계산한다.
+       이렇게 하면 부팅 후 기기를 다른 면/기울기로 옮겨도 중력 DC가 RMS에
+       새어들지 않는다. |dx|<=~2048, 윈도우 200샘플 → |sum_dx|<=~4e5 (int32 안전). */
+    int32_t  sum_dx_x;
+    int32_t  sum_dx_y;
+    int32_t  sum_dx_z;
+
     /* 진단용 마지막 raw 값 */
     int16_t  last_raw_x;
     int16_t  last_raw_y;
     int16_t  last_raw_z;
     int16_t  reserved2;
 
-    /* 최신 NTC raw (BLE 광고 시 온도 변환에 사용) */
+    /* 최신 NTC raw (진단/폴백용) */
     int16_t  last_raw_ntc1;
     int16_t  last_raw_ntc2;
+
+    /* ULP → main: NTC raw 누적. main이 1초마다 ntc_count로 나눠 평균 raw를 구해
+       온도로 변환 후 리셋. 200Hz×4095×1s ≈ 8.2e5 < 2^32 (uint32 안전).
+       순시 1샘플 대신 창 전체 평균 → 백색잡음 1/√N (~14×) 저감, 표시 지연 0. */
+    uint32_t sum_ntc1;
+    uint32_t sum_ntc2;
+    uint32_t ntc_count;
 
     /* 동적 zero 보정용 raw 누적 (3s × 200Hz × ~2000 → int16 overflow, uint32 필요) */
     uint32_t sum_raw_x;

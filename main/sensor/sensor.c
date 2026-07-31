@@ -2,28 +2,59 @@
 
 #include <math.h>
 
-uint16_t accel_rms_to_mg(uint32_t sum_sq, uint32_t n, float sens)
+uint16_t accel_rms_to_mg(uint32_t sum_sq, int32_t sum_dx, uint32_t n, float sens)
 {
     if (n == 0 || sens <= 0.0f) {
         return 0;
     }
-    float rms_cnt = sqrtf((float)sum_sq / (float)n);
+    /* 분산 = E[x^2] - (E[x])^2. 윈도우 평균(DC)을 빼므로 자세/기울기로 생긴
+       중력 DC가 RMS에 새어들지 않는다. float 반올림으로 음수가 나오면 0으로 클램프. */
+    float mean    = (float)sum_dx / (float)n;
+    float mean_sq = (float)sum_sq / (float)n;
+    float var     = mean_sq - mean * mean;
+    if (var < 0.0f) var = 0.0f;
+    float rms_cnt = sqrtf(var);
     float rms_mg  = rms_cnt / sens * 1000.0f;
     if (rms_mg < 0.0f)     rms_mg = 0.0f;
     if (rms_mg > 65535.0f) rms_mg = 65535.0f;
     return (uint16_t)rms_mg;
 }
 
-int16_t raw_to_temp_x100(uint16_t raw)
+float mv_to_resistance(float v_adc_mv)
 {
-    float v_adc = (float)raw / ADC_MAX_RAW * (float)ADC_REF_VOLTAGE_MV;
-    if (v_adc <= 0.0f) v_adc = 1.0f;
+    if (v_adc_mv <= 0.0f) v_adc_mv = 1.0f;
 
-    float r_ntc = THERMISTOR_R_PULLDOWN * ((float)ADC_REF_VOLTAGE_MV - v_adc) / v_adc;
+    float r_ntc = THERMISTOR_R_PULLDOWN * ((float)ADC_REF_VOLTAGE_MV - v_adc_mv) / v_adc_mv;
     if (r_ntc <= 0.0f) r_ntc = 1.0f;
+    return r_ntc;
+}
 
+float raw_to_resistance(uint16_t raw)
+{
+    /* INL 미보정 선형 경로(폴백). 정확 경로는 adc_cal_raw_to_mv()+mv_to_resistance(). */
+    float v_adc = (float)raw / ADC_MAX_RAW * (float)ADC_REF_VOLTAGE_MV;
+    return mv_to_resistance(v_adc);
+}
+
+int16_t resistance_to_temp_beta_x100(float r_ntc)
+{
+    if (r_ntc <= 0.0f) r_ntc = 1.0f;
     float temp_k = 1.0f / (1.0f / THERMISTOR_T0 +
                            logf(r_ntc / THERMISTOR_R0) / THERMISTOR_BETA);
-    float temp_c = temp_k - 273.15f;
-    return (int16_t)(temp_c * 100.0f);
+    return (int16_t)((temp_k - 273.15f) * 100.0f);
+}
+
+int16_t resistance_to_temp_steinhart_x100(float r_ntc)
+{
+    if (r_ntc <= 0.0f) r_ntc = 1.0f;
+    float ln_r  = logf(r_ntc);
+    float inv_t = STEINHART_A + STEINHART_B * ln_r + STEINHART_C * ln_r * ln_r * ln_r;
+    if (inv_t <= 0.0f) inv_t = 1e-6f;
+    float temp_k = 1.0f / inv_t;
+    return (int16_t)((temp_k - 273.15f) * 100.0f);
+}
+
+int16_t raw_to_temp_x100(uint16_t raw)
+{
+    return resistance_to_temp_beta_x100(raw_to_resistance(raw));
 }

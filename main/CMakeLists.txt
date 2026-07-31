@@ -2,8 +2,12 @@ idf_component_register(
     SRCS
         "app_main.c"
         "ble/ble_adv.c"
+        "ble/adv_manager.c"
         "sensor/sensor.c"
+        "sensor/adc_cal.c"
         "ulp/ulp_init.c"
+        "watchdog/wdt_guard.c"
+        "watchdog/wdt_test.c"
     INCLUDE_DIRS "."
     REQUIRES ulp nvs_flash bt esp_adc hal led_strip esp_pm esp_hw_support
 )

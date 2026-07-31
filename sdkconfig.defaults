@@ -1,0 +1,20 @@
+# Analog 1.0.0 — 1년 전력 설계 전제 (Docs/INGPS_1yr_firmware_design.md 8절)
+# 기존 로컬 sdkconfig가 있으면 우선됨 — 신규 빌드/CI 기준값.
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+# BLE 컨트롤러 modem sleep (광고 인터벌 사이 라디오 정지)
+CONFIG_BT_CTRL_MODEM_SLEEP=y
+CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
+# ★★ BLE 저전력 클럭 = RTC Slow (필수)
+#  MAIN_XTAL로 두면 BLE 컨트롤러가 ESP_PM_NO_LIGHT_SLEEP 락을 상시 점유해
+#  라이트슬립에 아예 진입하지 못한다(2026-07-30 실측: 50mA). esp_pm_configure가
+#  성공해도 DFS만 동작하고 슬립은 0회. 이 프로젝트는 비연결 광고 전용
+#  (conn_mode=NON)이라 BLE 연결용 500ppm 정확도 요구가 적용되지 않으므로
+#  RTC Slow로 안전하게 갈 수 있다. 단 광고 인터벌이 내장 RC 오차만큼(±5%,
+#  온도 드리프트) 흔들리므로 전력 예산도 그만큼 변동한다.
+CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW=y
+# 향후 외부 32.768kHz 크리스털 실장 시: RTC_SLOW가 자동으로 그 크리스털을
+# 따라가므로 아래 한 줄만 켜면 된다(BT 설정은 그대로 유지).
+#  ⚠ 크리스털 미검출 시 IDF가 조용히 MAIN_XTAL로 폴백 → 전류 원복. 실장 후
+#    반드시 esp_pm_dump_locks / 전류로 확인할 것.
+# CONFIG_RTC_CLK_SRC_EXT_CRYS=y
