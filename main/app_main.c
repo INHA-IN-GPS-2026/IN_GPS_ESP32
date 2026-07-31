@@ -11,6 +11,8 @@
 
 #define PIN_RGB_LED  48
 
+#define TEST
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
