@@ -30,6 +30,16 @@ extern uint8_t g_own_addr_type;
  */
 void adv_cycle_task(void *arg);
 
+/* === NVS 안전 커밋 지원 (2026-07-31, BOD LVL7 원복과 세트) ===============
+   nvs_safe_commit()이 flash write를 TX 전류 스파이크와 시간 분리할 때 사용.
+   pause 중엔 adv_cycle_task도 인터벌 변경 재시작을 보류한다. */
+
+/** @brief 광고 일시정지. 아직 광고 시작 전이면 no-op(0 반환). @return 0=성공 */
+int ble_adv_pause(void);
+
+/** @brief 광고 재개(현재 adv_manager 인터벌 사용). pause와 짝. @return 0=성공 */
+int ble_adv_resume(void);
+
 /* === 딥슬립 버스트 광고 (2026-07-15 추가) ===============================
    매 wake마다: mfg_data 1회 빌드 → duration_ms 동안만 광고 → NimBLE이 자동으로
    멈추고 BLE_GAP_EVENT_ADV_COMPLETE 발생 → ble_adv_wait_burst_done()이 깨어남.

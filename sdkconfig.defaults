@@ -5,16 +5,48 @@ CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 # BLE 컨트롤러 modem sleep (광고 인터벌 사이 라디오 정지)
 CONFIG_BT_CTRL_MODEM_SLEEP=y
 CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
-# ★★ BLE 저전력 클럭 = RTC Slow (필수)
-#  MAIN_XTAL로 두면 BLE 컨트롤러가 ESP_PM_NO_LIGHT_SLEEP 락을 상시 점유해
-#  라이트슬립에 아예 진입하지 못한다(2026-07-30 실측: 50mA). esp_pm_configure가
-#  성공해도 DFS만 동작하고 슬립은 0회. 이 프로젝트는 비연결 광고 전용
-#  (conn_mode=NON)이라 BLE 연결용 500ppm 정확도 요구가 적용되지 않으므로
-#  RTC Slow로 안전하게 갈 수 있다. 단 광고 인터벌이 내장 RC 오차만큼(±5%,
-#  온도 드리프트) 흔들리므로 전력 예산도 그만큼 변동한다.
-CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW=y
-# 향후 외부 32.768kHz 크리스털 실장 시: RTC_SLOW가 자동으로 그 크리스털을
-# 따라가므로 아래 한 줄만 켜면 된다(BT 설정은 그대로 유지).
-#  ⚠ 크리스털 미검출 시 IDF가 조용히 MAIN_XTAL로 폴백 → 전류 원복. 실장 후
-#    반드시 esp_pm_dump_locks / 전류로 확인할 것.
+# ★★ BLE 저전력 클럭 — 2026-07-31 결정: 크리스털 실장 전까지 MAIN_XTAL 유지
+#
+#  IDF의 선택지는 셋이고, 32.768kHz 크리스털이 없으면 앞의 둘 중 하나만 고를 수
+#  있다. 하나를 고르면 다른 하나를 포기하는 구조다.
+#
+#   ┌─────────────┬────────────┬───────────┬──────────────────────────┐
+#   │ lpclk       │ TX 피크    │ 평균전류  │ 비고                     │
+#   ├─────────────┼────────────┼───────────┼──────────────────────────┤
+#   │ MAIN_XTAL   │ ~150mA     │ 나쁨      │ 광고 사이 40MHz XTAL 유지│
+#   │ RTC_SLOW    │ ~400mA     │ 좋음      │ 매 광고마다 XTAL 냉시동  │
+#   │ EXT_32K     │ 낮음       │ 최선      │ ★크리스털 실장 필요      │
+#   └─────────────┴────────────┴───────────┴──────────────────────────┘
+#
+#  RTC_SLOW를 쓰면 광고 사이 40MHz 메인 크리스털이 꺼지고, 매 광고 이벤트마다
+#  크리스털 콜드스타트+PLL 락+라디오 파워업이 겹쳐 인러시가 ~400mA로 뛴다
+#  (2026-07-31 커스텀 PCB 실측). C10=10µF 입력 벌크로는 못 받아내 브라운아웃
+#  마진을 깎는다. 평균은 좋아지지만(21mA→4mA대) 안정성을 먼저 확보하기로 결정.
+#  IDF 도움말도 RTC_SLOW(내부 136kHz RC)는 500ppm 요구를 크게 벗어난다고 경고.
+CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y
+# lpclk가 MAIN_XTAL일 때만 존재하는 옵션. 라이트슬립 중에도 메인 크리스털을
+# 켜둬 웨이크 인러시를 낮춘다(이게 없으면 컨트롤러가 NO_LIGHT_SLEEP 락을 잡아
+# 슬립 진입 자체가 막힌다 — 2026-07-30에 관측한 "슬립 0회, 50mA"가 이 경우).
+CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
+#
+# ★ 32.768kHz 크리스털 실장 시(디지털 센서 전환과 함께 예정): 아래 두 줄로 교체.
+#   피크와 평균을 동시에 잡는 유일한 조합이며, 위 트레이드오프가 사라진다.
+#   ⚠ 크리스털 미검출 시 IDF가 조용히 폴백한다. 실장 후 반드시
+#     esp_pm_dump_locks / 전류 실측으로 실제 적용 여부를 확인할 것.
 # CONFIG_RTC_CLK_SRC_EXT_CRYS=y
+# CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y
+
+# ★ BOD 임계 = IDF 기본 LVL7(≈2.44V)로 원복(2026-07-31).
+#  S3는 SEL 숫자↑ = 임계전압↓ (정확한 라벨은 menuconfig에서 확인).
+#  2026-07-18의 7→5는 "완화" 의도였으나 실제로는 임계를 ≈2.67V로 올려
+#  TX 스파이크 dip(데브킷 실측 3.0V 미만)에 더 민감해진 변경이었다 → 원복.
+#  ⚠ 2.44V는 플래시 write 안전선(~2.7V) 아래. 런타임 NVS commit은 반드시
+#    nvs_safe_commit()(main/nvs_safe.h — adv 정지→commit→재개) 경유할 것.
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
+
+# ★ light sleep 진단용(2026-08-03). 평상시엔 꺼둔다 — 슬립 경로에 훅이 추가된다.
+#  "Light sleep: ENABLED" 로그는 esp_pm_configure()가 설정을 수락했다는 뜻일 뿐
+#  실제 진입을 보장하지 않는다. 진입 횟수·누적 수면시간을 세려면 이 옵션을 켜고
+#  app_main.c의 INGPS_PM_DEBUG를 1로 둘 것(15초마다 실적+락 목록 출력).
+#  2026-08-03 실측: 이 방법으로 light sleep 점유율 92~94% 확인 완료.
+# CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y

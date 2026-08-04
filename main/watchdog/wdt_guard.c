@@ -1,4 +1,4 @@
-/* watchdog/wdt_guard.c — 통합 워치독/자가복구 관리 (2026-07-18)
+/* watchdog/wdt_guard.c — 통합 워치독/자가복구 관리
  *
  * 보호 계층(아래로 갈수록 마지막 방어선, 상세는 Docs/Watchdog_설계.md):
  *   L1  앱 헬스모니터 태스크(이 파일): ULP 샘플 정지·BLE 광고 갱신 정지 등
@@ -11,11 +11,9 @@
  *
  * 복구 정책:
  *   - ULP 정지 복구는 "ULP만 재시작"이 아니라 전체 재부팅으로 한다. ULP 런타임
- *     재시작에는 미해결 버그가 있고(07-15 딥슬립 재설계 때 확인), 전체 재부팅이
- *     초기화 경로가 결정적(deterministic)이라 안전하다.
+ *     재시작에는 미해결 버그가 있고, 전체 재부팅이 초기화 경로가 결정적이라 안전하다.
  *   - 비정상 리셋 후엔 RTC_NOINIT에 보관한 ADXL zero로 10초 재캘리브를 건너뛰어
- *     (fast resume) "1초마다 BLE 송신" 요구사항의 다운타임을 최소화한다.
- *     (기존 start_ulp_adc_measurement(do_zero_cal=false, ...) 경로 재활용.)
+ *     (fast resume) "주기적 BLE 송신" 요구사항의 다운타임을 최소화한다.
  */
 #include "wdt_guard.h"
 
@@ -40,10 +38,10 @@ static const char *TAG = "WDT_GUARD";
 #define WDT_ULP_STALL_LIMIT    3      /* 연속 3회(=6s) total_samples 정지 → 재부팅 */
 #define WDT_HB_ADV_STALE_MS    15000  /* 광고 갱신 heartbeat 정지 허용 한도 */
 #define WDT_CRASHLOOP_WARN     3      /* 연속 비정상 리셋 경고 임계 */
-/* ★Analog 1.0.0 crash-loop escalation(07-18 설계의 '향후' 항목 구현):
-   BACKOFF_N회부터 재시도 전 지수 백오프 딥슬립(30s×2^k, 상한 600s)으로 배터리
-   소모를 억제하고, SAFE_N회부터는 SAFE 모드(10s 최소광고, 캘리브 생략)로
-   "존재 알림"만 유지한다. 정상 가동 1h 지속 시 카운터 자동 클리어. */
+/* crash-loop escalation: BACKOFF_N회부터 재시도 전 지수 백오프 딥슬립
+   (30s×2^k, 상한 600s)으로 배터리 소모를 억제하고, SAFE_N회부터는 SAFE 모드
+   (10s 최소광고, 캘리브 생략)로 "존재 알림"만 유지한다.
+   정상 가동 1h 지속 시 카운터 자동 클리어. */
 #define WDT_ESC_BACKOFF_N      3      /* 이 횟수부터 백오프 딥슬립 */
 #define WDT_ESC_SAFE_N         8      /* 이 횟수부터 SAFE 모드 */
 #define WDT_ESC_BACKOFF_BASE_S 30
@@ -157,7 +155,10 @@ static void wdt_monitor_task(void *arg)
 
         /* 1) ULP 생존 확인: total_samples 전진 여부.
            ULP 코프로세서는 TWDT/INT WDT 감시 범위 밖이라 여기서만 잡힘.
-           (ULP는 매 5ms 사이클마다 total_samples++ — 2s에 ~390 전진 정상.) */
+           (ULP는 매 5ms 사이클마다 total_samples++ — 2s에 ~390 전진 정상.)
+           INGPS_ULP_ADC_OFF 실험 빌드에서는 ULP를 의도적으로 안 띄우므로
+           이 감시를 끈다 — 안 그러면 6s 만에 재부팅 루프에 빠진다. */
+#if !INGPS_ULP_ADC_OFF
         uint32_t total = ulp_shared.total_samples;
         if (!ulp_base) {
             ulp_base = true;
@@ -172,6 +173,9 @@ static void wdt_monitor_task(void *arg)
             ulp_stall = 0;
         }
         last_total = total;
+#else
+        (void)last_total; (void)ulp_stall; (void)ulp_base;
+#endif
 
         /* 2) 앱 heartbeat 신선도 확인 */
         int64_t now = esp_timer_get_time();

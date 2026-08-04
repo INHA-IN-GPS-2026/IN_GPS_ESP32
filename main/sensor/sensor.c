@@ -29,21 +29,6 @@ float mv_to_resistance(float v_adc_mv)
     return r_ntc;
 }
 
-float raw_to_resistance(uint16_t raw)
-{
-    /* INL 미보정 선형 경로(폴백). 정확 경로는 adc_cal_raw_to_mv()+mv_to_resistance(). */
-    float v_adc = (float)raw / ADC_MAX_RAW * (float)ADC_REF_VOLTAGE_MV;
-    return mv_to_resistance(v_adc);
-}
-
-int16_t resistance_to_temp_beta_x100(float r_ntc)
-{
-    if (r_ntc <= 0.0f) r_ntc = 1.0f;
-    float temp_k = 1.0f / (1.0f / THERMISTOR_T0 +
-                           logf(r_ntc / THERMISTOR_R0) / THERMISTOR_BETA);
-    return (int16_t)((temp_k - 273.15f) * 100.0f);
-}
-
 int16_t resistance_to_temp_steinhart_x100(float r_ntc)
 {
     if (r_ntc <= 0.0f) r_ntc = 1.0f;
@@ -52,9 +37,4 @@ int16_t resistance_to_temp_steinhart_x100(float r_ntc)
     if (inv_t <= 0.0f) inv_t = 1e-6f;
     float temp_k = 1.0f / inv_t;
     return (int16_t)((temp_k - 273.15f) * 100.0f);
-}
-
-int16_t raw_to_temp_x100(uint16_t raw)
-{
-    return resistance_to_temp_beta_x100(raw_to_resistance(raw));
 }

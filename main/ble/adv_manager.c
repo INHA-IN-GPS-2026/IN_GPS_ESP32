@@ -19,10 +19,18 @@ static const char *TAG = "ADV_MGR";
 #define ADVM_DEF_MOT_MG     25       /* ADXL335 zero-보정 후 RMS 노이즈 플로어 위 */
 #define ADVM_DEF_DT_X100    50       /* 0.5°C */
 #define ADVM_SAFE_MS        10000
-#define ADVM_ITVL_MAX_UNITS 0x4000   /* BLE 스펙 상한 10.24s */
+#define ADVM_ITVL_MAX_UNITS 0x4000   /* BLE 스펙 상한 10.24s (0.625ms 단위) */
+#define ADVM_ITVL_MAX_MS    10240
+
+/* ★임시 실험용 — 광고 주기를 상태·NVS와 무관하게 고정한다(ms).
+   0 = 정상 적응형 상태머신(MOVING 1s / STATIONARY 3s).
+   값을 주면 policy를 FIXED로 강제해 모션·ΔT 전이를 막고 그 주기로 고정한다.
+   NVS knob보다 뒤에 적용되므로 저장값이 있어도 확실히 덮어쓴다.
+   ⚠ 상한 ADVM_ITVL_MAX_MS(10240) 이하여야 한다. 실험 후 0으로 되돌릴 것. */
+#define ADVM_FORCE_CYCLE_MS 0
 
 #ifndef ADVM_DEF_TX_DBM
-#define ADVM_DEF_TX_DBM     15
+#define ADVM_DEF_TX_DBM     9
 #endif
 
 #ifndef ADVM_MAX_TX_DBM
@@ -90,11 +98,25 @@ void adv_manager_init(void)
         nvs_get_i8 (h, "tx_dbm",   &s_cfg.tx_dbm);
         nvs_close(h);
     }
-    /* 방어: 인터벌 하한 100ms(스펙 20ms지만 전력상 의미 없음), 상한 10.24s */
+    /* 하한 100ms(스펙은 20ms지만 전력상 의미 없음), 상한 10.24s(BLE 광고 스펙).
+       상한을 여기서 걸지 않으면 cadence만 커지고 광고 인터벌은 itvl_units()에서
+       10.24s로 잘려, 같은 페이로드가 여러 번 반복 송출되고 ADV stale 임계도
+       함께 늘어난다. */
     if (s_cfg.mv_ms < 100)  s_cfg.mv_ms = 100;
+    if (s_cfg.mv_ms > ADVM_ITVL_MAX_MS) s_cfg.mv_ms = ADVM_ITVL_MAX_MS;
     if (s_cfg.st_ms < s_cfg.mv_ms) s_cfg.st_ms = s_cfg.mv_ms;
+    if (s_cfg.st_ms > ADVM_ITVL_MAX_MS) s_cfg.st_ms = ADVM_ITVL_MAX_MS;
     if (s_cfg.tx_dbm > ADVM_MAX_TX_DBM) s_cfg.tx_dbm = ADVM_MAX_TX_DBM;
     if (s_cfg.tx_dbm < ADVM_MIN_TX_DBM) s_cfg.tx_dbm = ADVM_MIN_TX_DBM;
+
+#if ADVM_FORCE_CYCLE_MS
+    /* NVS knob·기본값을 모두 덮어쓰고 고정 cadence로 강제한다(클램프 뒤에 적용). */
+    s_cfg.policy = 0;                      /* FIXED — 모션/ΔT 전이 없음 */
+    s_cfg.mv_ms  = ADVM_FORCE_CYCLE_MS;
+    s_cfg.st_ms  = ADVM_FORCE_CYCLE_MS;
+    ESP_LOGW(TAG, "FORCED adv cycle = %dms (실험 빌드, 상태 전이 비활성)",
+             ADVM_FORCE_CYCLE_MS);
+#endif
 
     if (wdt_guard_safe_mode()) {
         s_state = ADVM_SAFE;
