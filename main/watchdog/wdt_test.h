@@ -15,7 +15,7 @@
 //   그 전까지는 정상 동작(1초 광고 갱신)을 관찰할 수 있다.
 // 재부팅 후 확인 포인트:
 //   - "reset reason=N" 이 위 표와 일치하는지
-//   - "[fast resume]" + "reusing saved zero" 로그 (10s 재캘리브 생략)
+//   - "[fast resume]" + "reusing saved zero" 로그 (재캘리브 생략)
 //   - BLE 스캐너에서 광고 끊김이 ~2s 이내인지
 //   - 장애 코드를 켠 채 두면 3회째부터 "crash-loop suspected" 경고가 뜨는지
 //     (mode 1은 재부팅 후 ULP가 살아나므로 crash-loop은 mode 3/4/5로 확인)

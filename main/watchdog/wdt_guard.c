@@ -12,7 +12,7 @@
  * 복구 정책:
  *   - ULP 정지 복구는 "ULP만 재시작"이 아니라 전체 재부팅으로 한다. ULP 런타임
  *     재시작에는 미해결 버그가 있고, 전체 재부팅이 초기화 경로가 결정적이라 안전하다.
- *   - 비정상 리셋 후엔 RTC_NOINIT에 보관한 ADXL zero로 10초 재캘리브를 건너뛰어
+ *   - 비정상 리셋 후엔 RTC_NOINIT에 보관한 ADXL zero로 재캘리브를 건너뛰어
  *     (fast resume) "주기적 BLE 송신" 요구사항의 다운타임을 최소화한다.
  */
 #include "wdt_guard.h"
@@ -40,14 +40,17 @@ static const char *TAG = "WDT_GUARD";
 #define WDT_CRASHLOOP_WARN     3      /* 연속 비정상 리셋 경고 임계 */
 /* crash-loop escalation: BACKOFF_N회부터 재시도 전 지수 백오프 딥슬립
    (30s×2^k, 상한 600s)으로 배터리 소모를 억제하고, SAFE_N회부터는 SAFE 모드
-   (10s 최소광고, 캘리브 생략)로 "존재 알림"만 유지한다.
+   (10s 최소광고, 캘리브 50ms 단축)로 "존재 알림"만 유지한다.
+   ⚠ SAFE에서도 zero 캘리브를 완전히 생략하면 안 된다 — SAFE cadence 10s는
+     zero=0일 때 sum_sq(uint32) 오버플로 임계(5.3s)를 넘어 RMS가 3축 모두
+     0으로 나간다. app_main.c의 ADXL_CAL_MS_SAFE 주석 참조.
    정상 가동 1h 지속 시 카운터 자동 클리어. */
 #define WDT_ESC_BACKOFF_N      3      /* 이 횟수부터 백오프 딥슬립 */
 #define WDT_ESC_SAFE_N         8      /* 이 횟수부터 SAFE 모드 */
 #define WDT_ESC_BACKOFF_BASE_S 30
 #define WDT_ESC_BACKOFF_MAX_S  600
 #define WDT_ESC_STABLE_CLEAR_S 3600   /* 무사고 1h → 카운터 리셋 */
-/* 1 = 비정상 리셋 후 저장된 zero로 10s 재캘리브 생략(fast resume). 끄려면 0. */
+/* 1 = 비정상 리셋 후 저장된 zero로 재캘리브 생략(fast resume). 끄려면 0. */
 #ifndef WDT_FAST_RESUME
 #define WDT_FAST_RESUME        1
 #endif
@@ -150,7 +153,7 @@ static void wdt_monitor_task(void *arg)
         esp_task_wdt_reset();
 
         if (!s_armed) {
-            continue;   /* 부팅(10s 캘리브 포함) 완료 전엔 앱 체크 보류 */
+            continue;   /* 부팅(zero 캘리브 포함) 완료 전엔 앱 체크 보류 */
         }
 
         /* 1) ULP 생존 확인: total_samples 전진 여부.
@@ -229,7 +232,7 @@ void wdt_guard_init(void)
 
     /* === crash-loop escalation ======================================== */
     if (s_rtc.abnormal_resets >= WDT_ESC_SAFE_N) {
-        /* SAFE: 재부팅 루프를 멈추지 않되 기능 최소화(10s 광고, 캘리브 생략).
+        /* SAFE: 재부팅 루프를 멈추지 않되 기능 최소화(10s 광고, 캘리브 50ms).
            BLE "존재 알림"은 유지 — 회수/진단 가능성을 남긴다. */
         s_safe_mode = true;
         ESP_LOGE(TAG, "crash-loop ESCALATION: SAFE mode (%u abnormal resets)",

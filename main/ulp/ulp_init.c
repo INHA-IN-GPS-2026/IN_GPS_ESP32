@@ -30,20 +30,21 @@ void start_ulp_adc_measurement(bool do_zero_cal, int16_t zero_x, int16_t zero_y,
        RTC 페리페럴 도메인을 항상 켜 둔다. */
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
-    /* HW 핀맵: TH1=GPIO3=CH2, TH2=GPIO4=CH3, ADXL X/Y/Z=GPIO5/6/7=CH4/5/6. */
+    /* HW 핀맵: ADXL X/Y/Z = GPIO5/6/7 = CH4/5/6.
+       구 NTC 채널(CH2/CH3)은 AS6221 I2C 전환으로 제거됐다 — board_pins.h 참조. */
     ulp_adc_cfg_t adc_config = {
         .adc_n    = ADC_UNIT_1,
-        .channel  = ADC_CHANNEL_2,
+        .channel  = ADC_CHANNEL_4,
         .atten    = ADC_ATTEN_DB_12,
         .width    = ADC_BITWIDTH_12,
         .ulp_mode = ADC_ULP_MODE_RISCV,
     };
     ESP_ERROR_CHECK(ulp_adc_init(&adc_config));
 
-    /* ulp_adc_init은 CH2만 설정하므로 나머지 채널(CH3~CH6)의 감쇠를
+    /* ulp_adc_init은 CH4만 설정하므로 나머지 채널(CH5~CH6)의 감쇠를
        레지스터로 직접 DB_12(필드값 3)에 맞춘다. */
     uint32_t atten = SENS.sar_atten1;
-    for (int ch = ADC_CHANNEL_3; ch <= ADC_CHANNEL_6; ch++) {
+    for (int ch = ADC_CHANNEL_5; ch <= ADC_CHANNEL_6; ch++) {
         atten = (atten & ~(0x3U << (ch * 2))) | (3U << (ch * 2));
     }
     SENS.sar_atten1 = atten;
@@ -74,9 +75,6 @@ void start_ulp_adc_measurement(bool do_zero_cal, int16_t zero_x, int16_t zero_y,
     ulp_shared.sum_sq_y     = 0;
     ulp_shared.sum_sq_z     = 0;
     ulp_shared.sample_count = 0;
-    ulp_shared.sum_ntc1     = 0;
-    ulp_shared.sum_ntc2     = 0;
-    ulp_shared.ntc_count    = 0;
 
     ESP_ERROR_CHECK(ulp_set_wakeup_period(0, ULP_WAKEUP_PERIOD_US));
     ESP_ERROR_CHECK(ulp_riscv_run());

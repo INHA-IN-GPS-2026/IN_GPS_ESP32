@@ -3,16 +3,20 @@
 #include <stdint.h>
 
 #define ULP_MAGIC   0x56494221u  // "!BIV"
-#define ULP_VERSION 4
+/* v5: NTC ADC 채널(CH2/CH3) 제거. 온도는 AS6221(I2C)이 메인 CPU에서 읽는다.
+   ULP는 ADXL335 3축만 담당한다. */
+#define ULP_VERSION 5
 
 /* ★전류 A/B 실험 전용 — 1이면 ULP/SARADC 서브시스템을 통째로 빼고 부팅한다.
-   빠지는 것: ULP 기동, 194.7Hz SARADC 폴링, 10초 ADXL zero 캘리브,
+   빠지는 것: ULP 기동, 194.7Hz SARADC 폴링, ADXL zero 캘리브(1s),
              RTC_PERIPH 도메인 강제 ON, 워치독의 ULP stall 감시.
    유지되는 것: BLE 광고·light sleep·워치독 나머지 계층 → 전력 경로 중
              "ULP 기여분"만 분리 측정할 수 있다.
-   ⚠ 아날로그 프런트엔드(ADXL335 ~350µA, NTC 분압 ~330µA)는 전원 게이팅 회로가
-     없어 이 스위치로 안 빠진다. 즉 측정되는 델타는 ULP+SARADC+RTC_PERIPH 몫이다.
-   ⚠ 켜면 온도·RMS가 전부 0으로 광고된다. 절대 운영 빌드로 내보내지 말 것. */
+   ⚠ ADXL335(~350µA)는 전원 게이팅 회로가 없어 이 스위치로 안 빠진다.
+     즉 측정되는 델타는 ULP+SARADC+RTC_PERIPH 몫이다.
+     (아날로그 버전의 NTC 분압 ~330µA는 AS6221 I2C 전환으로 사라졌다.)
+   ⚠ 켜면 RMS가 전부 0으로 광고된다. 온도는 I2C 경로라 영향받지 않는다.
+     절대 운영 빌드로 내보내지 말 것. */
 #ifndef INGPS_ULP_ADC_OFF
 #define INGPS_ULP_ADC_OFF 0
 #endif
@@ -60,17 +64,6 @@ typedef struct {
     int16_t  last_raw_y;
     int16_t  last_raw_z;
     int16_t  reserved2;
-
-    /* 최신 NTC raw (진단/폴백용) */
-    int16_t  last_raw_ntc1;
-    int16_t  last_raw_ntc2;
-
-    /* ULP → main: NTC raw 누적. main이 사이클마다 ntc_count로 나눠 평균 raw를 구해
-       온도로 변환 후 리셋. 순시 1샘플 대신 창 전체 평균 → 백색잡음 1/√N 저감, 지연 0.
-       최악(SAFE 10s 사이클, 2000샘플) 2000×4095 ≈ 8.2e6 < 2^32. */
-    uint32_t sum_ntc1;
-    uint32_t sum_ntc2;
-    uint32_t ntc_count;
 
     /* 동적 zero 보정용 raw 누적 (int16으로는 넘쳐 uint32 필요) */
     uint32_t sum_raw_x;

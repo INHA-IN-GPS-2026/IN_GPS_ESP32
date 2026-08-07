@@ -43,7 +43,9 @@ void wdt_guard_boot_done(void);
 void wdt_guard_reboot(const char *reason) __attribute__((noreturn));
 
 /** @return crash-loop escalation이 SAFE 모드를 선언했는지 (Analog 1.0.0).
- *         true면 앱은 최소 기능(10s 광고, 캘리브 생략)으로 부팅해야 한다. */
+ *         true면 앱은 최소 기능(10s 광고, 캘리브 단축)으로 부팅해야 한다.
+ *         ⚠ "캘리브 생략"이 아니다 — SAFE cadence가 10s라 zero=0으로 두면
+ *           sum_sq(uint32)가 넘쳐 RMS가 0으로 나간다. app_main.c 참조. */
 bool wdt_guard_safe_mode(void);
 
 /** @brief heartbeat 허용 한도(stale_ms) 조정. 적응형 광고 cadence(3s/10s)에서
@@ -52,7 +54,7 @@ void wdt_guard_set_hb_stale(wdt_hb_id_t id, uint32_t stale_ms);
 
 /**
  * @brief 비정상 리셋(WDT/panic/자가복구 SW 리셋) 후 재부팅이면, 직전 가동에서
- *        저장해 둔 ADXL zero를 돌려주고 true. → 10초 재캘리브 생략(fast resume)
+ *        저장해 둔 ADXL zero를 돌려주고 true. → 재캘리브 생략(fast resume)
  *        으로 광고 재개까지 다운타임 ~1.5s로 단축.
  *        전원 인가/브라운아웃/데이터 손상 시 false → 통상 캘리브 수행.
  */

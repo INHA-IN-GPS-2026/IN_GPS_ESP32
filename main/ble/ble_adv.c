@@ -12,7 +12,7 @@
 #include "services/gap/ble_svc_gap.h"
 
 #include "sensor/sensor.h"
-#include "sensor/adc_cal.h"
+#include "sensor/as6221.h"
 #include "ulp_shared.h"
 #include "watchdog/wdt_guard.h"
 #include "adv_manager.h"
@@ -27,9 +27,11 @@ extern volatile ulp_shared_t ulp_shared;
 /*
  * Manufacturer Specific Data (13바이트) — 게이트웨이/서버와의 계약.
  * 바이트 배치를 바꾸면 게이트웨이 파서와 temperature_log 스키마가 함께 깨진다.
+ * ★I2C 전환에서도 이 레이아웃은 그대로다 — 온도 취득 경로만 바뀌었고
+ *   게이트웨이/서버/앱은 손댈 필요가 없다.
  *   [0..1]   company ID (LE) = 0x1234
- *   [2..3]   temp1   (°C × 100, int16 LE)   GPIO3 NTC (TH1)
- *   [4..5]   temp2   (°C × 100, int16 LE)   GPIO4 NTC (TH2)
+ *   [2..3]   temp1   (°C × 100, int16 LE)   AS6221 #1 (TH1, I2C)
+ *   [4..5]   temp2   (°C × 100, int16 LE)   AS6221 #2 (TH2, I2C)
  *   [6..7]   rms_x   (mg, uint16 LE)
  *   [8..9]   rms_y   (mg, uint16 LE)
  *   [10..11] rms_z   (mg, uint16 LE)
@@ -45,7 +47,11 @@ static uint8_t mfg_data[] = {
     ESP_DEVICE_ID
 };
 
-/* 최신 측정 스냅샷 — adv_manager 상태 전이 입력용 */
+/* 최신 측정 스냅샷 — adv_manager 상태 전이 입력용.
+   t1/t2는 "마지막으로 유효했던" 온도다. 읽기 실패 시의 센티넬
+   (AS6221_TEMP_INVALID_X100 = -327.68°C)을 그대로 넣으면 다음 성공 읽기에서
+   |ΔT|가 수백 도로 잡혀 STATIONARY→MOVING 오승격이 나고 배터리를 태운다.
+   센티넬은 mfg_data(=서버가 NULL로 거를 값)에만 싣는다. */
 typedef struct {
     uint16_t rms_max_mg;
     int16_t  t1_x100;
@@ -94,33 +100,20 @@ static void build_mfg_data(adv_meas_t *out)
     uint16_t rms_y_mg = accel_rms_to_mg(sy, dy, n, ADXL335_SENS_Y);
     uint16_t rms_z_mg = accel_rms_to_mg(sz, dz, n, ADXL335_SENS_Z);
 
-    /* NTC 창 평균을 ×16 고정소수로 계산해 sub-LSB 정보를 보존한다. 정수
-       나눗셈(sum/n)은 소수부를 버리는데, 200~2000샘플 평균의 표준오차가
-       0.3~0.7 LSB라 1 LSB 절삭이 그 정보를 통째로 삼킨다.
-       ntc_count==0(부팅 직후 경계)이면 최신 순시값으로 폴백.
-       오버플로: 최대 2000샘플 × 4095 × 16 = 1.31e8 < 2^32. */
-    uint32_t ntc_n = ulp_shared.ntc_count;
-    float raw1_f = ntc_n
-        ? (float)((ulp_shared.sum_ntc1 * 16U) / ntc_n) / 16.0f
-        : (float)ulp_shared.last_raw_ntc1;
-    float raw2_f = ntc_n
-        ? (float)((ulp_shared.sum_ntc2 * 16U) / ntc_n) / 16.0f
-        : (float)ulp_shared.last_raw_ntc2;
-    ulp_shared.sum_ntc1  = 0;
-    ulp_shared.sum_ntc2  = 0;
-    ulp_shared.ntc_count = 0;
+    /* 온도는 AS6221이 자체 변환한 값을 그대로 읽는다. 아날로그 버전의
+       창평균·eFuse INL 보정·Steinhart-Hart 변환은 전부 불필요해졌다
+       (센서 자체 정확도 ±0.1°C, 분해능 1/128°C).
+       읽기는 광고 사이클당 채널별 1회 — 버스 점유 ~1ms. */
+    int16_t temp1 = AS6221_TEMP_INVALID_X100;
+    int16_t temp2 = AS6221_TEMP_INVALID_X100;
+    bool ok1 = as6221_read_x100(AS6221_CH_TH1, &temp1);
+    bool ok2 = as6221_read_x100(AS6221_CH_TH2, &temp2);
 
-    /* avg raw → adc_cal_raw_frac_to_mv (per-chip eFuse curve fitting) → 실전압
-                → mv_to_resistance (분압 역산) → R → Steinhart-Hart → 온도.
-       ULP는 raw만 누적하므로 per-chip 곡선 보정은 여기(메인 CPU)에서 적용한다.
-       float 오버로드를 쓰는 이유는 위 창평균의 소수부를 온도까지 살리기 위함.
-       adc_cal 미가용(eFuse 미소성)이면 내부에서 선형 폴백. */
-    float v_ntc1 = adc_cal_raw_frac_to_mv(raw1_f);
-    float v_ntc2 = adc_cal_raw_frac_to_mv(raw2_f);
-    float r_ntc1 = mv_to_resistance(v_ntc1);
-    float r_ntc2 = mv_to_resistance(v_ntc2);
-    int16_t temp1 = resistance_to_temp_steinhart_x100(r_ntc1);
-    int16_t temp2 = resistance_to_temp_steinhart_x100(r_ntc2);
+    /* adv_manager에 넘길 "마지막 유효값". 부팅 후 한 번도 못 읽었으면 0을 유지해
+       ΔT가 0으로 계산되게 한다(승격 없음). */
+    static int16_t s_last_t1, s_last_t2;
+    if (ok1) s_last_t1 = temp1;
+    if (ok2) s_last_t2 = temp2;
 
     mfg_data[2]  = (uint8_t)((uint16_t)temp1 & 0xFF);
     mfg_data[3]  = (uint8_t)((uint16_t)temp1 >> 8);
@@ -138,18 +131,17 @@ static void build_mfg_data(adv_meas_t *out)
         if (rms_y_mg > m) m = rms_y_mg;
         if (rms_z_mg > m) m = rms_z_mg;
         out->rms_max_mg = m;
-        out->t1_x100    = temp1;
-        out->t2_x100    = temp2;
+        out->t1_x100    = s_last_t1;
+        out->t2_x100    = s_last_t2;
     }
 
     /* 매 사이클 데이터 로그는 DEBUG — 운영 빌드에서 묵음. 진단 시
        esp_log_level_set("BLE_ADV", ESP_LOG_DEBUG)로 개방(전류↑ 유의). */
-    ESP_LOGD(TAG, "RMS X=%u Y=%u Z=%u mg fs=%u ntc_n=%u",
-             rms_x_mg, rms_y_mg, rms_z_mg, (unsigned)n, (unsigned)ntc_n);
-    ESP_LOGD(TAG, "T1=%.2fC R=%.0f v=%.1fmV raw=%.2f | T2=%.2fC R=%.0f v=%.1fmV raw=%.2f cal=%d",
-             temp1 / 100.0f, r_ntc1, v_ntc1, raw1_f,
-             temp2 / 100.0f, r_ntc2, v_ntc2, raw2_f,
-             (int)adc_cal_is_enabled());
+    ESP_LOGD(TAG, "RMS X=%u Y=%u Z=%u mg fs=%u",
+             rms_x_mg, rms_y_mg, rms_z_mg, (unsigned)n);
+    ESP_LOGD(TAG, "T1=%.2fC(0x%02X %s) | T2=%.2fC(0x%02X %s)",
+             temp1 / 100.0f, as6221_addr(AS6221_CH_TH1), ok1 ? "ok" : "FAIL",
+             temp2 / 100.0f, as6221_addr(AS6221_CH_TH2), ok2 ? "ok" : "FAIL");
 }
 
 /* mfg_data → BLE advertising payload로 인코딩.

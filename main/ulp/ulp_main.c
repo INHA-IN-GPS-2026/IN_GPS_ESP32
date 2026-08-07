@@ -23,7 +23,11 @@ static uint16_t adc_read_avg(int ch, int shift)
 
 int main(void)
 {
-    if (shared.magic != ULP_MAGIC) {
+    /* magic만이 아니라 version도 본다. RTC_SLOW_MEM은 리셋을 살아남으므로,
+       구조체 레이아웃이 바뀐 펌웨어를 덮어씌우면 magic이 그대로 남아 초기화가
+       통째로 건너뛰어지고 옛 오프셋의 값이 새 필드로 읽힌다. NTC 필드 3개
+       (12B)를 걷어낸 v5에서 실제로 발생할 수 있는 조합이라 여기서 막는다. */
+    if (shared.magic != ULP_MAGIC || shared.version != ULP_VERSION) {
         shared.magic         = ULP_MAGIC;
         shared.version       = ULP_VERSION;
         shared.sum_sq_x      = 0;
@@ -32,28 +36,24 @@ int main(void)
         shared.sum_dx_x      = 0;
         shared.sum_dx_y      = 0;
         shared.sum_dx_z      = 0;
-        shared.sum_ntc1      = 0;
-        shared.sum_ntc2      = 0;
-        shared.ntc_count     = 0;
         shared.sample_count  = 0;
         shared.total_samples = 0;
+        shared.sum_raw_x     = 0;
+        shared.sum_raw_y     = 0;
+        shared.sum_raw_z     = 0;
+        shared.zero_x        = 0;
+        shared.zero_y        = 0;
+        shared.zero_z        = 0;
+        shared.cal_phase     = 0;
     }
 
-    /* HW 핀맵(ESP32-S3-WROOM-1 스키매틱): ADC1_CHx = GPIO(x+1).
-       TH1=GPIO3=CH2, TH2=GPIO4=CH3. NTC는 소스 임피던스가 5~10kΩ로 높아
-       채널 전환 직후 dummy read로 S/H cap을 정착시키지 않으면 채널 간 누설이 섞인다. */
-    (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_2);
-    shared.last_raw_ntc1 = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_2);
-    (void)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_3);
-    shared.last_raw_ntc2 = (int16_t)ulp_riscv_adc_read_channel(ADC_UNIT_1, ADC_CHANNEL_3);
+    /* HW 핀맵(Docs/Schemetic/I2C_init_ver.pdf, ESP32-S3: ADC1_CHx = GPIO(x+1)):
+       ADXL335 CH4=GPIO5(X), CH5=GPIO6(Y), CH6=GPIO7(Z).
 
-    /* 창 평균용 누적(덧셈만, 나눗셈은 main). */
-    shared.sum_ntc1 += (uint32_t)shared.last_raw_ntc1;
-    shared.sum_ntc2 += (uint32_t)shared.last_raw_ntc2;
-    shared.ntc_count++;
-
-    /* ADXL335: CH4=GPIO5(X), CH5=GPIO6(Y), CH6=GPIO7(Z).
-       GPIO8(CH7)은 SDA_OUT(I2C)이므로 절대 ADC로 읽지 말 것. */
+       이 리비전에서 ULP가 읽는 아날로그 채널은 이 3개가 전부다.
+       구 NTC 채널(CH2=GPIO3, CH3=GPIO4)은 AS6221 I2C 전환으로 제거됐고,
+       두 핀에는 이제 어떤 네트도 붙지 않는다 — 다시 읽지 말 것.
+       GPIO8(CH7)은 SDA_OUT(BQ35100 I2C)이므로 마찬가지로 ADC 금지. */
     int16_t rx = (int16_t)adc_read_avg(ADC_CHANNEL_4, ADXL_OVERSAMPLE_SHIFT);
     int16_t ry = (int16_t)adc_read_avg(ADC_CHANNEL_5, ADXL_OVERSAMPLE_SHIFT);
     int16_t rz = (int16_t)adc_read_avg(ADC_CHANNEL_6, ADXL_OVERSAMPLE_SHIFT);
