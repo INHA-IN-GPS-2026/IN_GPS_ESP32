@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include "nvs_flash.h"
 #include "led_strip.h"
+#include "driver/gpio.h"   /* floor_test_task 생존 토글 */
 
 #include "board_pins.h"
 
@@ -27,6 +28,57 @@
    0 = DFS만 쓰고 CPU 상시 on. 0은 평균 전류가 ~5배 나빠져 1년 목표가 불가능하며
    슬립/웨이크 트랜지언트를 제거한 대조군 측정 전용이다. */
 #define INGPS_LIGHT_SLEEP  1
+
+/* ★floor(라이트슬립 잔류) 전류 실측 모드 — 스코프/DMM 측정용.
+
+   ⚠ 스위치는 여기가 아니라 ble/ble_adv.h의 INGPS_FLOOR_TEST(기본 0)다.
+     app_main.c와 ble_adv.c 두 번역 단위가 같은 값을 봐야 하므로 헤더에 두었다.
+     여기서 #define 하면 ble_adv.c는 여전히 0으로 컴파일되어 광고만 멈추고
+     센서 읽기는 계속 도는 어중간한 빌드가 된다.
+
+   왜 필요한가:
+     전력예산의 지배 항목인 "라이트슬립 잔류 240µA"는 🔶설계 가정일 뿐 한 번도
+     측정된 적이 없다. 그런데 TX 버스트(피크 ~294mA)가 섞여 있으면 floor를
+     분리할 수 없다 — 두 값의 동적 범위가 1000:1이라 한 션트로 둘 다 못 잡는다.
+     그래서 "광고만 멈춘 상태"를 만들어 floor만 남긴다.
+
+   동작:
+     정상 부팅 → FLOOR_TEST_SETTLE_MS 동안 평소대로 광고(부팅 성공 확인 구간)
+       → WDT_HB_ADV 무장해제 → ble_adv_pause()
+       → adv_cycle_task가 센서 읽기·페이로드 갱신까지 중단(ble_adv.c)
+       → 이후 FLOOR_TEST_TOGGLE_S 주기 생존 토글만 남음
+
+   ⚠ 안정화 구간을 먼저 두는 이유: 과거 "R15 단선 DMM 측정 60~70µA"가
+     부팅 실패 상태를 측정한 값이라 무효 처리된 이력이 있다
+     (Docs/INGPS_전력예산_디지털전환_ADXL345_2026-08-07.md 56행).
+     이 구간에 BLE 스캐너로 광고가 보여야 이후 측정이 유효하다.
+
+   ⚠ 저측 션트(0.1Ω, BAT- 경로)를 쓸 때 UART를 PC에 물리면 PC 접지가 션트를
+     우회시켜 측정이 무의미해진다. 측정 중에는 UART를 분리할 것.
+     그래서 "살아 있는가"를 UART 없이 확인할 수단이 생존 토글이다.
+
+   측정 절차 전문: Docs/INGPS_floor전류_측정절차_2026-08-11.md */
+
+/* 광고를 멈추기 전 정상 동작 확인 구간. BLE 스캐너로 광고가 잡히는 것을
+   눈으로 확인할 시간이 필요하므로 너무 짧게 잡지 말 것. */
+#define FLOOR_TEST_SETTLE_MS     30000
+
+/* 생존 토글 주기(초). 매 토글마다 CPU가 라이트슬립에서 한 번 깨므로
+   이 값이 짧을수록 측정 대상인 floor 자체를 오염시킨다.
+   10s면 웨이크 기여가 ~2µA(240µA의 1%) 수준으로 추정된다 — 🔶미검증.
+   더 깨끗하게 재려면 30~60s로 늘릴 것. */
+#define FLOOR_TEST_TOGGLE_S      10
+
+/* 생존 토글 출력 핀. -1이면 토글 없이 전류 파형만으로 판정한다.
+   ⚠ 기본값 GPIO3은 board_pins.h 기준 rev 4.0에서 "어떤 네트도 붙지 않는" 핀이라
+     경합이 없다. 대신 트레이스가 없어 모듈 패드에서 직접 프로빙해야 한다.
+   ⚠ 아래 핀들은 절대 쓰지 말 것 — 전부 외부 소자가 구동하는 입력이라
+     출력으로 잡으면 충돌한다:
+       GPIO10 LBO_OUT(레귤레이터 출력)  GPIO11 PGOOD_OUT(레귤레이터 출력)
+       GPIO12 ALERT_OUT(BQ35100 출력)   GPIO15/16 ALERT_TH1/2(AS6221 출력 가능)
+   ⚠ GPIO0은 J6 커넥터에 나와 있어 프로빙은 쉽지만, 토글이 LOW인 순간에 리셋이
+     걸리면 다운로드 모드로 빠진다. 브라운아웃이 날 수 있는 측정에서는 금물. */
+#define FLOOR_TEST_TOGGLE_PIN    3
 
 /* ★벌크캡 축전 검증 모드 (branch I_Current_test 전용).
    가설: 1000µF 벌크캡이 충분히 충전되기 전에 부하가 걸려, 첫 TX에서 레일이
@@ -50,6 +102,21 @@
       ★수치는 데이터시트 기반 추정이며 실측 미검증.)
    ⚠ ULP가 돌면 deep sleep 중에도 샘플링을 계속하므로, 이 테스트는
      INGPS_ULP_ADC_OFF=1과 함께 써야 축전 구간이 깨끗하다. */
+/* ★플래시 사용량 리포트 (branch flash_info_check 전용).
+   1이면 부팅 시 1회, 플래시 물리 크기 / 파티션 레이아웃 / app 이미지 실크기 /
+   NVS 사용률을 UART로 덤프한다.
+
+   왜 런타임 확인이 필요한가:
+     esptool flash_id는 "칩이 16MB"까지만 알려준다. 정작 중요한
+     "sdkconfig가 2MB로 잡혀 있어 14MB가 죽어 있다"와 "app 파티션 1MB 중
+     실제 몇 %를 쓰는가"는 칩 위에서 esp_flash_get_physical_size()와
+     esp_flash_get_size()를 나란히 읽어야 확정된다.
+
+   ⚠ 전류 실측(INGPS_FLOOR_TEST / INGPS_CAP_CHARGE_TEST) 빌드에서는 0으로
+     되돌릴 것. 부팅 1회 출력이지만 UART 송신이 CPU를 깨우고 PM 락을 잡는다.
+   ⚠ 이 리포트는 읽기 전용이다 — 플래시에 아무것도 쓰지 않는다. */
+#define INGPS_FLASH_REPORT     1
+
 #define INGPS_CAP_CHARGE_TEST  0
 #define CAP_TEST_SLEEP_S       30      /* 축전 구간(deep sleep) */
 /* 관측 구간. ⚠ INGPS_ULP_ADC_OFF=0(실부하)이면 첫 광고까지 ~2.5s가 걸린다:
@@ -75,6 +142,9 @@
 #include "sensor/as6221.h"
 #include "sensor/sensor.h"
 #include "watchdog/wdt_guard.h"
+#if INGPS_FLASH_REPORT
+#include "diag/flash_report.h"
+#endif
 
 static const char *TAG = "APP_MAIN";
 
@@ -218,6 +288,59 @@ static void cap_test_task(void *arg)
 }
 #endif
 
+#if INGPS_FLOOR_TEST
+/* 이 태스크는 의도적으로 wdt_guard_task_subscribe()를 하지 않는다.
+   TWDT 감시 대상이 되면 8s 안에 feed하려고 4s마다 깨야 하는데, 그 웨이크가
+   바로 측정 대상인 floor를 오염시킨다. 미등록 태스크는 TWDT가 보지 않고,
+   idle 태스크 감시는 IDF가 라이트슬립 중에도 idle 훅으로 처리한다. */
+static void floor_test_task(void *arg)
+{
+    (void)arg;
+
+    /* 1) 안정화 — 이 구간에는 평소대로 광고한다. BLE 스캐너로 잡히는지
+          확인할 것. 안 잡히면 이후 측정값은 전부 무효다. */
+    vTaskDelay(pdMS_TO_TICKS(FLOOR_TEST_SETTLE_MS));
+
+    /* 2) ADV heartbeat 신선도 감시를 먼저 푼다. 순서가 중요 — 광고를 멈춘 뒤에
+          풀면 그 사이 stale(15s) 판정으로 자가 재부팅이 걸린다.
+          wdt_guard_set_hb_stale은 느슨해지는 방향만 허용하므로 안전하다. */
+    wdt_guard_set_hb_stale(WDT_HB_ADV, 0xFFFFFFFFu);
+
+    /* 3) 광고 정지. adv_cycle_task는 INGPS_FLOOR_TEST 빌드에서 s_adv_paused를
+          보고 센서 읽기·페이로드 갱신까지 건너뛴다(ble_adv.c). */
+    ble_adv_pause();
+
+    printf("\n*** INGPS_FLOOR_TEST : 광고 정지, floor 측정 구간 시작 ***\n"
+           "*** 지금부터 UART를 분리하고 측정하세요. 측정 후 0으로 원복. ***\n\n");
+    fflush(stdout);
+
+#if FLOOR_TEST_TOGGLE_PIN >= 0
+    gpio_config_t tog = {
+        .pin_bit_mask = 1ULL << FLOOR_TEST_TOGGLE_PIN,
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&tog);
+    int lvl = 0;
+    gpio_set_level(FLOOR_TEST_TOGGLE_PIN, lvl);
+#endif
+
+    /* 4) 생존 토글. 스코프 CH2에서 주기 2×FLOOR_TEST_TOGGLE_S의 구형파가 보이면
+          살아 있는 것이고, 레벨이 굳으면 죽은 것이다. 토글을 끈 경우(-1)에도
+          CH1 전류 파형 자체가 판정 근거가 된다 — 부팅 버스트 → 정숙 구간이
+          보여야 하고, 재부팅 루프면 버스트가 반복된다. */
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)FLOOR_TEST_TOGGLE_S * 1000u));
+#if FLOOR_TEST_TOGGLE_PIN >= 0
+        lvl ^= 1;
+        gpio_set_level(FLOOR_TEST_TOGGLE_PIN, lvl);
+#endif
+    }
+}
+#endif
+
 void app_main(void)
 {
 #if INGPS_CAP_CHARGE_TEST
@@ -244,6 +367,16 @@ void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+#if INGPS_FLASH_REPORT
+    /* NVS 초기화 직후에 둔다 — nvs_get_stats()가 초기화를 전제로 한다.
+       광고 정책(adv_manager_init)보다 앞이라 NVS 사용량은 "knob 로드 전"
+       기준이지만, 엔트리 수 차이는 knob 몇 개 수준이라 판독에 지장 없다.
+       출력이 UART로 나가는 동안(≈0.3s @115200) TWDT 8s를 소모하므로
+       끝나고 바로 feed한다. */
+    flash_report_print();
+    wdt_guard_feed();
+#endif
 
     /* 적응형 광고 정책 초기화(NVS knob 로드).
        crash-loop escalation이 SAFE를 선언했으면 여기서 10s 최소광고로 고정. */
@@ -428,5 +561,11 @@ void app_main(void)
 
 #if INGPS_CAP_CHARGE_TEST
     xTaskCreatePinnedToCore(cap_test_task, "cap_test", 2560, NULL, 2, NULL, 0);
+#endif
+
+#if INGPS_FLOOR_TEST
+    /* Core 0(BLE 호스트 쪽)에 낮은 우선순위로. 하는 일이 vTaskDelay와 GPIO
+       토글뿐이라 adv_cycle_task(Core 1, prio 5)와 경합하지 않는다. */
+    xTaskCreatePinnedToCore(floor_test_task, "floor_test", 2560, NULL, 1, NULL, 0);
 #endif
 }

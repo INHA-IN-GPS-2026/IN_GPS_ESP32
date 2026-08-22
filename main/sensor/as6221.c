@@ -28,7 +28,7 @@ static const char *TAG = "AS6221";
    adv_manager의 ΔT 승격이 최대 4초 늦어진다. 반대로 4/s(기본)는 전류만 더 쓴다.
    데이터시트 기준 4 conv/s에서 typ 6µA이고 그보다 낮은 변환율은 더 적다. */
 #ifndef AS6221_CONV_RATE_CR
-#define AS6221_CONV_RATE_CR  1
+#define AS6221_CONV_RATE_CR  2
 #endif
 
 /* SM=0(연속변환), IM=0(comparator), POL=0, CF=00, SS=0.

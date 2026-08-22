@@ -23,6 +23,20 @@
 
 extern uint8_t g_own_addr_type;
 
+/* ★★ floor(라이트슬립 잔류) 전류 실측 빌드 스위치 — 여기가 유일한 정의다.
+   0 = 정상 빌드, 1 = 측정 빌드(안정화 후 광고·센서읽기 정지 + 생존 토글).
+
+   app_main.c와 ble_adv.c가 같은 값을 봐야 해서 헤더에 둔다
+   (INGPS_ULP_ADC_OFF가 ulp_shared.h에 있는 것과 같은 이유). app_main.c에서
+   #define 하면 ble_adv.c는 0으로 컴파일되어 반쪽짜리 빌드가 된다.
+
+   동작 설명·안정화 시간·생존 토글 핀은 app_main.c의 knob 주석,
+   측정 절차 전문은 Docs/INGPS_floor전류_측정절차_2026-08-11.md 참조.
+   ⚠ 측정이 끝나면 반드시 0으로 원복할 것 — 이 빌드는 광고를 하지 않는다. */
+#ifndef INGPS_FLOOR_TEST
+#define INGPS_FLOOR_TEST  0
+#endif
+
 /**
  * @brief BLE 광고 사이클 태스크 (FreeRTOS task entry). 구 상시광고 버전 — 딥슬립
  *        재설계 이후엔 app_main에서 안 씀(참고/롤백용으로 남겨둠).

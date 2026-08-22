@@ -262,6 +262,15 @@ void adv_cycle_task(void *arg)
     while (1) {
         wait_cycle(adv_manager_cycle_ms());
 
+#if INGPS_FLOOR_TEST
+        /* floor 실측 빌드: 광고를 멈춘 뒤에는 센서 읽기·페이로드 갱신까지
+           건너뛴다. 라이트슬립 잔류만 남겨야 floor가 측정되기 때문이다.
+           TWDT는 위 wait_cycle()이 계속 먹이므로 태스크는 살아 있다.
+           ⚠ WDT_HB_ADV(15s 신선도)는 app_main의 floor_test_task가 pause
+             '이전에' 무장해제한다 — 순서가 바뀌면 stale 판정으로 자가 재부팅. */
+        if (s_adv_paused) continue;
+#endif
+
         build_mfg_data(&meas);
         adv_manager_update(meas.rms_max_mg, meas.t1_x100, meas.t2_x100);
 
