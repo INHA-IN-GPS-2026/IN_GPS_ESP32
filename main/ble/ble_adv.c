@@ -13,13 +13,11 @@
 
 #include "sensor/sensor.h"
 #include "sensor/as6221.h"
-#include "ulp_shared.h"
+#include "sensor/adxl345.h"
 #include "watchdog/wdt_guard.h"
 #include "adv_manager.h"
 
 static const char *TAG = "BLE_ADV";
-
-extern volatile ulp_shared_t ulp_shared;
 
 /* STM32 게이트웨이가 이 ESP를 구분하는 device ID. */
 #define ESP_DEVICE_ID  0x01
@@ -32,7 +30,7 @@ extern volatile ulp_shared_t ulp_shared;
  *   [0..1]   company ID (LE) = 0x1234
  *   [2..3]   temp1   (°C × 100, int16 LE)   AS6221 #1 (TH1, I2C)
  *   [4..5]   temp2   (°C × 100, int16 LE)   AS6221 #2 (TH2, I2C)
- *   [6..7]   rms_x   (mg, uint16 LE)
+ *   [6..7]   rms_x   (mg, uint16 LE)   ADXL345 (I2C 0x53)
  *   [8..9]   rms_y   (mg, uint16 LE)
  *   [10..11] rms_z   (mg, uint16 LE)
  *   [12]     device ID
@@ -67,38 +65,20 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
     return 0;
 }
 
-/* ULP 누적값을 읽고 0으로 리셋. 읽기/리셋 사이 ULP가 한 번 더 누적할 수 있으나
-   200Hz 기준 최대 1샘플 손실이라 무시한다. */
-static void read_and_reset_accum(uint32_t *sx, uint32_t *sy, uint32_t *sz,
-                                 int32_t *dx, int32_t *dy, int32_t *dz,
-                                 uint32_t *n)
-{
-    *n  = ulp_shared.sample_count;
-    *sx = ulp_shared.sum_sq_x;
-    *sy = ulp_shared.sum_sq_y;
-    *sz = ulp_shared.sum_sq_z;
-    *dx = ulp_shared.sum_dx_x;
-    *dy = ulp_shared.sum_dx_y;
-    *dz = ulp_shared.sum_dx_z;
-
-    ulp_shared.sum_sq_x     = 0;
-    ulp_shared.sum_sq_y     = 0;
-    ulp_shared.sum_sq_z     = 0;
-    ulp_shared.sum_dx_x     = 0;
-    ulp_shared.sum_dx_y     = 0;
-    ulp_shared.sum_dx_z     = 0;
-    ulp_shared.sample_count = 0;
-}
-
 static void build_mfg_data(adv_meas_t *out)
 {
-    uint32_t sx, sy, sz, n;
-    int32_t  dx, dy, dz;
-    read_and_reset_accum(&sx, &sy, &sz, &dx, &dy, &dz, &n);
-
-    uint16_t rms_x_mg = accel_rms_to_mg(sx, dx, n, ADXL335_SENS_X);
-    uint16_t rms_y_mg = accel_rms_to_mg(sy, dy, n, ADXL335_SENS_Y);
-    uint16_t rms_z_mg = accel_rms_to_mg(sz, dz, n, ADXL335_SENS_Z);
+    /* ADXL345 FIFO(stream, 32-deep @100Hz)를 드레인해 RMS를 낸다.
+       구 ULP 경로와 달리 창이 광고 주기 전체가 아니라 고정 320ms다 -
+       정상상태 진동에서는 등가지만 3s 주기에서는 듀티 11%라 간헐 충격을
+       놓칠 수 있다(sensor/adxl345.h 참조).
+       실패하면 세 축 모두 0이 나가고, 드라이버가 60s 백오프로 버스를 보호한다. */
+    uint16_t rms_x_mg = 0, rms_y_mg = 0, rms_z_mg = 0;
+    uint32_t n = 0;
+    bool accel_ok = adxl345_read_rms(&rms_x_mg, &rms_y_mg, &rms_z_mg, &n);
+    if (accel_ok) {
+        /* "센서가 실제로 표본을 냈다" 시점에만 kick - 구 ULP stall 감시를 대체한다. */
+        wdt_guard_heartbeat(WDT_HB_ACCEL);
+    }
 
     /* 온도는 AS6221이 자체 변환한 값을 그대로 읽는다. 아날로그 버전의
        창평균·eFuse INL 보정·Steinhart-Hart 변환은 전부 불필요해졌다
@@ -137,8 +117,8 @@ static void build_mfg_data(adv_meas_t *out)
 
     /* 매 사이클 데이터 로그는 DEBUG — 운영 빌드에서 묵음. 진단 시
        esp_log_level_set("BLE_ADV", ESP_LOG_DEBUG)로 개방(전류↑ 유의). */
-    ESP_LOGD(TAG, "RMS X=%u Y=%u Z=%u mg fs=%u",
-             rms_x_mg, rms_y_mg, rms_z_mg, (unsigned)n);
+    ESP_LOGD(TAG, "RMS X=%u Y=%u Z=%u mg n=%u %s",
+             rms_x_mg, rms_y_mg, rms_z_mg, (unsigned)n, accel_ok ? "ok" : "FAIL");
     ESP_LOGD(TAG, "T1=%.2fC(0x%02X %s) | T2=%.2fC(0x%02X %s)",
              temp1 / 100.0f, as6221_addr(AS6221_CH_TH1), ok1 ? "ok" : "FAIL",
              temp2 / 100.0f, as6221_addr(AS6221_CH_TH2), ok2 ? "ok" : "FAIL");
@@ -256,6 +236,9 @@ void adv_cycle_task(void *arg)
     s_adv_ever_started = true;
     wdt_guard_heartbeat(WDT_HB_ADV);
     wdt_guard_set_hb_stale(WDT_HB_ADV, adv_manager_cycle_ms() * 3 + 5000);
+    /* ACCEL도 같은 cadence를 따라간다. 드라이버 백오프(60s)가 있어 하한이
+       75s라 짧은 cadence에서는 그대로 75s가 쓰인다. */
+    wdt_guard_set_hb_stale(WDT_HB_ACCEL, adv_manager_cycle_ms() * 3 + 5000);
 
     /* 매 사이클(상태머신 cadence)마다 mfg_data 갱신 + 상태 전이.
        인터벌이 바뀌면 adv stop→start로 재시작(광고 데이터는 유지됨). */
@@ -273,6 +256,7 @@ void adv_cycle_task(void *arg)
                 wdt_guard_reboot("adv restart failed");
             }
             wdt_guard_set_hb_stale(WDT_HB_ADV, adv_manager_cycle_ms() * 3 + 5000);
+            wdt_guard_set_hb_stale(WDT_HB_ACCEL, adv_manager_cycle_ms() * 3 + 5000);
         }
 
         rc = encode_adv_fields(adv_data, &adv_len);

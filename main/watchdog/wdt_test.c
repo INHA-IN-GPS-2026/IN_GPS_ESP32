@@ -9,7 +9,8 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "ulp_riscv.h"
+
+#include "sensor/adxl345.h"
 
 static const char *TAG = "WDT_TEST";
 
@@ -34,10 +35,15 @@ void wdt_test_tick(void)
              WDT_TEST_MODE, (unsigned)s_ticks);
 
 #if WDT_TEST_MODE == 1
-    /* ULP 정지: ULP 타이머를 멈춰 total_samples 전진을 중단시킨다.
-       기대: L1 모니터가 2s 주기 3회(≤6s) 후 "ULP stalled" 재부팅. */
-    ulp_riscv_timer_stop();
-    ESP_LOGW(TAG, "ULP timer stopped — expect L1 reboot within ~6s");
+    /* 가속도 표본 정지: ADXL345를 standby로 내려 FIFO가 더 이상 차지 않게 한다.
+       경로: 드레인 n=0 -> 3회 연속 실패 -> 60s 백오프 -> WDT_HB_ACCEL 정지
+             -> L1 모니터가 "accelerometer samples stalled" 재부팅.
+       ⚠ 구 ULP 정지(≤6s)보다 훨씬 느리다. 백오프(60s)를 포함한 stale 한도가
+         75s이므로 재부팅까지 최대 ~80초를 기다려야 한다. */
+    if (!adxl345_test_force_standby()) {
+        ESP_LOGE(TAG, "standby 주입 실패 — 센서가 안 붙어 있으면 이 모드는 무의미하다");
+    }
+    ESP_LOGW(TAG, "ADXL345 standby — expect L1 reboot within ~80s");
 
 #elif WDT_TEST_MODE == 2
     /* ADV 갱신 정지: 이후 heartbeat kick을 억제(광고 자체는 계속 갱신됨).

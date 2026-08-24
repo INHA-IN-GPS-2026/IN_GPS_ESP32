@@ -3,6 +3,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* ADC 스케일 상수. rev 4.0에서 sensor.h가 RMS 수식만 남기고 정리되면서
+   ADC 전용인 이 둘을 여기로 옮겼다(유일한 사용처가 adc_cal.c다). */
+#define ADC_REF_VOLTAGE_MV      3300
+#define ADC_MAX_RAW             4095.0f
+
 /* =====================================================================
    ★ I2C 브랜치 주의: 이 모듈은 현재 아무도 호출하지 않는다.
       온도가 AS6221(I2C 디지털 센서)로 넘어가면서 NTC raw→mV 곡선보정이

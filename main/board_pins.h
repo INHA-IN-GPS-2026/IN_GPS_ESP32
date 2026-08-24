@@ -1,59 +1,89 @@
 // board_pins.h — NEW SMART MODULE (rev 4.0) 핀맵 단일 출처.
-// 근거: Docs/Schemetic/I2C_init_ver.pdf (SMART SENSOR 2026.04.22, rev 4.0)
+// 근거: Docs/Schemetic/I2C_final_ver.pdf (SMART SENSOR 2026.04.22, rev 4.0,
+//       도면 생성 2026-08-12). 결선은 PDF 벡터 좌표를 추적해 확정했다.
 //
 // 이 파일이 스키매틱 네트명 ↔ GPIO 대응의 유일한 정의다. 핀 번호를 다른 파일에
 // 직접 써넣지 말 것 — 아날로그 버전에서 NTC 핀이 README/코드/주석에 각각 다르게
 // 적혀 있던 것이 이 파일을 만든 이유다.
+//
+// ★2026-08-22 갱신 — 근거 도면이 I2C_init_ver.pdf → I2C_final_ver.pdf로 바뀌며
+//   아래 5개가 이동/삭제됐다. 구 핀맵으로 빌드하면 온도·진동이 전멸한다.
+//
+//   | 항목            | 구(I2C_init_ver)   | 신(I2C_final_ver)          |
+//   |-----------------|--------------------|----------------------------|
+//   | ADXL335 X/Y/Z   | GPIO5/6/7 (ADC)    | 삭제 — ADXL345(I2C)로 대체 |
+//   | TH I2C 별도 버스| GPIO13/14          | 삭제 — 단일 버스로 통합    |
+//   | ALERT_TH1/TH2   | GPIO15/16          | GPIO13/14 로 이동          |
+//   | XTAL_32K_P/N    | —                  | GPIO15/16 (X1 실장)        |
+//   | PGOOD_OUT       | GPIO11             | 미접속                     |
 #pragma once
 
 /* === 스키매틱 네트 ↔ GPIO ==============================================
    MCU: ESP32-S3-WROOM-1-N16R8 (U5)
 
-   | 네트명     | GPIO | 모듈핀 | 용도                                   |
-   |------------|------|--------|----------------------------------------|
-   | X_OUT      |  5   |   5    | ADXL335 X  (ADC1_CH4)                  |
-   | Y_OUT      |  6   |   6    | ADXL335 Y  (ADC1_CH5)                  |
-   | Z_OUT      |  7   |   7    | ADXL335 Z  (ADC1_CH6)                  |
-   | SDA_OUT    |  8   |  12    | I2C #1 SDA — BQ35100 배터리 게이지     |
-   | SCL_OUT    |  9   |  17    | I2C #1 SCL — BQ35100                   |
-   | LBO_OUT    | 10   |  18    | 저전압 표시 입력                       |
-   | PGOOD_OUT  | 11   |  19    | power good 입력                        |
-   | ALERT_OUT  | 12   |  20    | BQ35100 ALERT 입력                     |
-   | SDA_TH     | 13   |  21    | I2C #2 SDA — AS6221 ×2 (J1 터미널)     |
-   | SCL_TH     | 14   |  22    | I2C #2 SCL — AS6221 ×2 (J1 터미널)     |
-   | ALERT_TH1  | 15   |   8    | AS6221 #1 ALERT (이 버전 미사용)       |
-   | ALERT_TH2  | 16   |   9    | AS6221 #2 ALERT (이 버전 미사용)       |
-   | CHIP_PU    | EN   |   3    |                                        |
-   | U0RXD/TXD  |  —   | 36/37  | 콘솔                                   |
-   | GPIO0      |  0   |  27    | 부트 스트랩                            |
+   | 네트명     | GPIO | 모듈핀 | 용도                                    |
+   |------------|------|--------|-----------------------------------------|
+   | SDA_OUT    |  8   |  12    | I2C 단일 버스 SDA                       |
+   | SCL_OUT    |  9   |  17    | I2C 단일 버스 SCL                       |
+   | LBO_OUT    | 10   |  18    | 저전압 표시 입력 (POWER_V4 U1 LBO)      |
+   | ALERT_OUT  | 12   |  20    | BQ35100 ALERT 입력                      |
+   | ALERT_TH1  | 13   |  21    | AS6221 #1 ALERT (이 버전 미사용)        |
+   | ALERT_TH2  | 14   |  22    | AS6221 #2 ALERT (이 버전 미사용)        |
+   | XTAL_32K_P | 15   |   8    | ★32.768kHz 크리스털 X1 — GPIO 금지      |
+   | XTAL_32K_N | 16   |   9    | ★32.768kHz 크리스털 X1 — GPIO 금지      |
+   | CHIP_PU    | EN   |   3    |                                         |
+   | U0RXD/TXD  |  —   | 36/37  | 콘솔                                    |
+   | GPIO0      |  0   |  27    | 부트 스트랩                             |
 
-   GPIO3 / GPIO4 는 아날로그 버전에서 NTC 분압(TH1/TH2)이 물려 있던 핀이다.
-   이 리비전에서는 아무 네트도 붙지 않는다 — ADC로 읽지 말 것.
+   미접속(도면에서 어떤 네트도 붙지 않음 — 읽거나 구동하지 말 것):
+     GPIO1~7, GPIO11, GPIO17~21, GPIO35~48
    === =================================================================== */
 
-/* --- 진동 (ULP SARADC) --- */
-#define PIN_ADXL_X        5     /* ADC1_CH4 */
-#define PIN_ADXL_Y        6     /* ADC1_CH5 */
-#define PIN_ADXL_Z        7     /* ADC1_CH6 */
+/* === ★ 절대 건드리면 안 되는 핀 =======================================
+   GPIO15/16은 rev 4.0에서 32.768kHz 크리스털(X1, C11/C12 6pF) 전용이다.
+   CONFIG_RTC_CLK_SRC_EXT_CRYS=y가 이 두 핀을 RTC 오실레이터로 점유하므로,
+   gpio_config()나 어떤 페리페럴에도 배정하면 크리스털이 죽고 IDF가 조용히
+   내부 RC로 폴백한다. 그 순간 평균전류가 µA대에서 mA대로 튀어 POWER_V4의
+   R5(100Ω)를 통과하지 못하고 부팅 히컵 루프가 된다.
+   구 리비전에서 ALERT_TH1/TH2가 여기 있었으므로, 옛 코드를 되살릴 때 주의.
+   === =================================================================== */
+#define PIN_XTAL32K_P     15    /* 참조용 — 코드에서 사용 금지 */
+#define PIN_XTAL32K_N     16    /* 참조용 — 코드에서 사용 금지 */
 
-/* --- 온도 I2C 버스 (AS6221 ×2, J1 CON6) ---
-   ⚠ 하드웨어 주의: 스키매틱의 THERMISTOR TERMINAL 블록에는 J1과 3.3V/GND만 있고
-     SDA_TH/SCL_TH에 풀업 저항이 없다. (10k 풀업 R9/R10은 BQ35100 버스 전용.)
-     AS6221 데이터시트는 SDA/SCL 외부 풀업을 필수로 요구하므로,
-     풀업은 센서 모듈 쪽에 있어야 한다. 없다면 ESP32 내부 풀업(~45kΩ)에
-     의존하게 되며 — as6221.c에서 켜 두었다 — 배선이 길면 파형이 무너진다.
-     그래서 버스 속도를 400kHz가 아니라 100kHz로 잡았다. */
-#define PIN_TH_SDA        13
-#define PIN_TH_SCL        14
-#define PIN_TH_ALERT1     15    /* 이 버전에서는 설정하지 않는다(입력 미사용) */
-#define PIN_TH_ALERT2     16
+/* --- I2C 단일 버스 (SDA_OUT / SCL_OUT) ---
+   rev 4.0에서 온도·가속도·배터리게이지가 한 버스에 모였다:
+     ADXL345 (U2, 0x53)  ·  AS6221 ×2 (J6 커넥터 외부 모듈)  ·  BQ35100 (U1)
 
-/* --- 배터리 게이지 I2C 버스 (BQ35100) --- 이 버전 미구현 --- */
-#define PIN_BAT_SDA       8
-#define PIN_BAT_SCL       9
-#define PIN_BAT_ALERT     12
-#define PIN_BAT_LBO       10
-#define PIN_BAT_PGOOD     11
+   버스 구성 (도면 "I2C" 블록):
+     MCU ─ R13/R14 100Ω 직렬 ─ 버스 ─ R11/R12 10kΩ 풀업, ESD U3/U4(TPD1E10B09)
 
-/* --- 기타 --- */
-#define PIN_RGB_LED       48    /* WS2812B (개발보드). 부팅 시 소등만 한다. */
+   ⚠ 외부 풀업이 10kΩ이므로 400kHz는 쓸 수 없다. 상승시간 τ ≈ 10k × C_bus가
+     400kHz 규격(t_r < 300ns)을 못 맞춘다. 100kHz(standard mode)로 고정한다.
+     구 리비전에는 외부 풀업이 아예 없어 내부 풀업(~45kΩ)에 기댔었다 —
+     이제는 외부 풀업이 있으므로 내부 풀업을 켜지 않는다(병렬로 물리면
+     유효 저항이 낮아져 버스 유휴 누설만 늘린다). */
+#define PIN_I2C_SDA       8
+#define PIN_I2C_SCL       9
+
+/* --- 상태 입력 (전부 이 버전 미구현) ---
+   ALERT_TH1/TH2는 AS6221의 오픈드레인 ALERT 출력이다. GPIO13/14 모두
+   ESP32-S3의 RTC GPIO 범위(0~21) 안이라 향후 딥슬립 EXT1 웨이크로 쓸 수 있다
+   (Docs/INGPS_슈퍼캡_축전시간_분석_2026-08-11.md §5-4-3 옵션 3).
+
+   ⚠ 같은 문서가 전제한 "ADXL345 INT1 → EXT1 웨이크로 진동도 즉시 감지"는
+     이 보드에서 불가능하다 — 도면상 U2의 INT1(8핀)/INT2(9핀)가 X 마크로
+     명시적 미접속이다. 하드웨어 웨이크는 AS6221 ALERT(과열) 경로만 남는다. */
+#define PIN_TH_ALERT1     13    /* 이 버전에서는 설정하지 않는다(입력 미사용) */
+#define PIN_TH_ALERT2     14    /* 〃 */
+#define PIN_BAT_ALERT     12    /* BQ35100 ALERT — 이 버전 미구현 */
+#define PIN_BAT_LBO       10    /* 저전압 표시 — 이 버전 미구현 */
+
+/* --- RGB LED ---
+   rev 4.0 실장 보드에는 WS2812B가 없다(IO48 미접속). 데브킷으로 브링업할 때만
+   1로 두면 부팅 시 소등 시퀀스가 돌아간다. 실장 보드에서 1로 두면 RMT 초기화
+   비용(부팅 에너지)만 쓰고 아무 일도 일어나지 않는다 — 슈퍼캡 부팅 마진이
+   빠듯하므로 기본 0. */
+#ifndef INGPS_HAS_RGB_LED
+#define INGPS_HAS_RGB_LED 0
+#endif
+#define PIN_RGB_LED       48    /* 데브킷 전용 */

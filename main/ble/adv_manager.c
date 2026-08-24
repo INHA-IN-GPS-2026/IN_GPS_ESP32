@@ -16,7 +16,11 @@ static const char *TAG = "ADV_MGR";
 #define ADVM_DEF_MV_MS      1000
 #define ADVM_DEF_ST_MS      3000
 #define ADVM_DEF_QUIET_MS   300000   /* 5분 */
-#define ADVM_DEF_MOT_MG     25       /* ADXL335 zero-보정 후 RMS 노이즈 플로어 위 */
+/* ⚠ 이 값은 ADXL335(아날로그 + ULP SARADC)의 노이즈 플로어 위로 잡힌 것이다.
+   ADXL345는 노이즈 밀도가 훨씬 낮아(대역 50Hz에서 RMS 수 mg 수준) 25mg는
+   과하게 보수적일 수 있다 — 승격이 안 걸리면 실측으로 재조정할 것.
+   NVS knob("advm"/"mot_mg")으로 런타임 변경 가능. */
+#define ADVM_DEF_MOT_MG     25
 #define ADVM_DEF_DT_X100    50       /* 0.5°C */
 #define ADVM_SAFE_MS        10000
 #define ADVM_ITVL_MAX_UNITS 0x4000   /* BLE 스펙 상한 10.24s (0.625ms 단위) */

@@ -2,24 +2,26 @@
 
 #include <stdint.h>
 
-/* ADXL335 감도 (3.3V 공급, 12-bit ADC, counts/g).
-   ⚠ PCB 실장 시 ADXL 방향(정/역)을 확인하고 재산출할 것. */
-#define ADXL335_SENS_X    406.845f
-#define ADXL335_SENS_Y    407.095f
-#define ADXL335_SENS_Z    399.405f
+/* 가속도계 감도 상수는 이제 드라이버 헤더가 소유한다.
+     ADXL345 (rev 4.0, I2C)  -> sensor/adxl345.h 의 ADXL345_SENS_FULL_RES (256 counts/g)
+   ADXL335(아날로그 3축, GPIO5/6/7 + ULP SARADC)는 rev 4.0에서 제거됐다.
+   구 감도 상수(ADXL335_SENS_X/Y/Z)와 ADC 스케일이 필요하면 digitalVer 이전
+   커밋(5e8998c) 또는 Analog_1.0.0_ver 브랜치를 볼 것.
 
-#define ADC_REF_VOLTAGE_MV      3300
-#define ADC_MAX_RAW             4095.0f
-
-/* NTC 써미스터 분압 상수와 Steinhart-Hart 계수는 이 브랜치에서 제거했다.
-   온도는 AS6221(I2C) 디지털 센서가 담당한다 — sensor/as6221.h 참조.
-   아날로그 변환 체인(mv_to_resistance / resistance_to_temp_steinhart_x100 /
-   adc_cal 곡선보정)이 필요하면 Analog_1.0.0_ver 브랜치를 볼 것. */
+   NTC 써미스터 분압 상수와 Steinhart-Hart 계수도 이 브랜치에는 없다.
+   온도는 AS6221(I2C) 디지털 센서가 담당한다 - sensor/as6221.h 참조. */
 
 /**
- * @brief 누적 sum_sq, dx 합(sum_dx), 샘플 수로부터 RMS 진동을 mg 단위로 변환.
+ * @brief 누적 sum_sq, 원시값 합(sum), 샘플 수로부터 RMS 진동을 mg 단위로 변환.
  *        윈도우 평균(DC)을 빼고 분산으로 계산하므로 자세/기울기에 독립적이다:
- *          var = sum_sq/n - (sum_dx/n)^2,  rms = sqrt(var).
+ *          var = sum_sq/n - (sum/n)^2,  rms = sqrt(var).
+ *        이 DC 제거가 있기 때문에 ADXL345 경로에서는 zero 캘리브레이션이
+ *        아예 필요 없다(중력 1g가 그대로 들어와도 대수적으로 소거된다).
  *        N=0이면 0 반환.
+ *
+ * @param sum_sq  샘플 제곱합
+ * @param sum     샘플 단순합 (ADXL335 시절엔 raw-zero였던 dx의 합)
+ * @param n       샘플 수
+ * @param sens    counts/g
  */
-uint16_t accel_rms_to_mg(uint32_t sum_sq, int32_t sum_dx, uint32_t n, float sens);
+uint16_t accel_rms_to_mg(uint32_t sum_sq, int32_t sum, uint32_t n, float sens);

@@ -1,40 +1,47 @@
-# Analog 1.0.0 — 1년 전력 설계 전제 (Docs/INGPS_1yr_firmware_design.md 8절)
-# 기존 로컬 sdkconfig가 있으면 우선됨 — 신규 빌드/CI 기준값.
+# digitalVer — NEW SMART MODULE rev 4.0 (Docs/Schemetic/I2C_final_ver.pdf) 기준.
+#
+# ★이 파일은 "새 체크아웃/CI에서 처음 빌드할 때의 기준값"일 뿐이다.
+#  실제 설정의 단일 출처는 저장소에 커밋된 sdkconfig다 — 1200줄 넘는 누적
+#  튜닝(패닉 핸들러, INT/RTC WDT 타임아웃, FreeRTOS HZ, NimBLE 구성 등)이
+#  거기에만 있고 이 파일로는 재현되지 않는다.
+#
+#  ⚠ sdkconfig를 지우고 재생성하지 말 것. CONFIG_IDF_TARGET도 거기에만 있어서
+#    지우면 타깃이 기본값(esp32)으로 떨어지고, adc_cali_curve_fitting(S3 전용)과
+#    esp_bt.h가 통째로 안 잡힌다. 설정을 바꿀 때는 menuconfig를 쓰거나
+#    sdkconfig를 직접 고치고, 그 변경을 이 파일에도 반영해 둘 것.
+CONFIG_IDF_TARGET="esp32s3"
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 # BLE 컨트롤러 modem sleep (광고 인터벌 사이 라디오 정지)
 CONFIG_BT_CTRL_MODEM_SLEEP=y
 CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
-# ★★ BLE 저전력 클럭 — 2026-07-31 결정: 크리스털 실장 전까지 MAIN_XTAL 유지
+
+# ★★ BLE 저전력 클럭 — 2026-08-22 전환: MAIN_XTAL → EXT_32K_XTAL
 #
-#  IDF의 선택지는 셋이고, 32.768kHz 크리스털이 없으면 앞의 둘 중 하나만 고를 수
-#  있다. 하나를 고르면 다른 하나를 포기하는 구조다.
+#  rev 4.0 보드에 32.768kHz 크리스털(X1 + C11/C12 6pF)이 GPIO15/16
+#  (XTAL_32K_P/N)에 실장되면서, 아래 트레이드오프가 사라졌다.
 #
 #   ┌─────────────┬────────────┬───────────┬──────────────────────────┐
 #   │ lpclk       │ TX 피크    │ 평균전류  │ 비고                     │
 #   ├─────────────┼────────────┼───────────┼──────────────────────────┤
-#   │ MAIN_XTAL   │ ~150mA     │ 나쁨      │ 광고 사이 40MHz XTAL 유지│
-#   │ RTC_SLOW    │ ~400mA     │ 좋음      │ 매 광고마다 XTAL 냉시동  │
-#   │ EXT_32K     │ 낮음       │ 최선      │ ★크리스털 실장 필요      │
+#   │ MAIN_XTAL   │ ~150mA     │ ~21mA     │ 광고 사이 40MHz XTAL 유지│
+#   │ RTC_SLOW    │ ~400mA     │ ~4mA      │ 매 광고마다 XTAL 냉시동  │
+#   │ EXT_32K     │ 낮음       │ 최선      │ ★현재 선택               │
 #   └─────────────┴────────────┴───────────┴──────────────────────────┘
 #
-#  RTC_SLOW를 쓰면 광고 사이 40MHz 메인 크리스털이 꺼지고, 매 광고 이벤트마다
-#  크리스털 콜드스타트+PLL 락+라디오 파워업이 겹쳐 인러시가 ~400mA로 뛴다
-#  (2026-07-31 커스텀 PCB 실측). C10=10µF 입력 벌크로는 못 받아내 브라운아웃
-#  마진을 깎는다. 평균은 좋아지지만(21mA→4mA대) 안정성을 먼저 확보하기로 결정.
-#  IDF 도움말도 RTC_SLOW(내부 136kHz RC)는 500ppm 요구를 크게 벗어난다고 경고.
-CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y
-# lpclk가 MAIN_XTAL일 때만 존재하는 옵션. 라이트슬립 중에도 메인 크리스털을
-# 켜둬 웨이크 인러시를 낮춘다(이게 없으면 컨트롤러가 NO_LIGHT_SLEEP 락을 잡아
-# 슬립 진입 자체가 막힌다 — 2026-07-30에 관측한 "슬립 0회, 50mA"가 이 경우).
-CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
+#  왜 이 전환이 전원 설계의 전제인가 (Docs/INGPS_슈퍼캡_축전시간_분석_2026-08-11.md §6-3):
+#    POWER_V4의 R5(100Ω)가 배터리에서 보낼 수 있는 최대 전력은 V²/4R = 32.4mW다.
+#    MAIN_XTAL 구성의 실측 21mA는 75.6mW를 요구하므로 **동작점이 아예 없다** —
+#    슈퍼캡이 마르면 슈퍼바이저가 EN을 내리고, 재축전 후 다시 부팅을 시도하는
+#    34초 주기 히컵 루프가 된다. 3.3V 레일이 정상적으로 꺼지므로 BOD 로그도
+#    남지 않고, wdt_guard의 crash-loop escalation도 POWERON으로 분류되어
+#    작동하지 않는다. 즉 이 두 줄이 "전원이 켜지느냐"를 가른다.
 #
-# ★ 32.768kHz 크리스털 실장 시(디지털 센서 전환과 함께 예정): 아래 두 줄로 교체.
-#   피크와 평균을 동시에 잡는 유일한 조합이며, 위 트레이드오프가 사라진다.
-#   ⚠ 크리스털 미검출 시 IDF가 조용히 폴백한다. 실장 후 반드시
-#     esp_pm_dump_locks / 전류 실측으로 실제 적용 여부를 확인할 것.
-# CONFIG_RTC_CLK_SRC_EXT_CRYS=y
-# CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y
+#  ⚠ 크리스털 미검출 시 IDF가 조용히 내부 RC로 폴백한다. 플래시 후 반드시
+#    확인할 것 — R5 양단 전압으로 평균전류 역산(457µA면 46mV)이 가장 확실하다.
+#    또는 app_main.c의 INGPS_PM_DEBUG=1로 esp_pm_dump_locks 확인.
+CONFIG_RTC_CLK_SRC_EXT_CRYS=y
+CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y
 
 # ★ BOD 임계 = IDF 기본 LVL7(≈2.44V)로 원복(2026-07-31).
 #  S3는 SEL 숫자↑ = 임계전압↓ (정확한 라벨은 menuconfig에서 확인).
@@ -42,7 +49,21 @@ CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
 #  TX 스파이크 dip(데브킷 실측 3.0V 미만)에 더 민감해진 변경이었다 → 원복.
 #  ⚠ 2.44V는 플래시 write 안전선(~2.7V) 아래. 런타임 NVS commit은 반드시
 #    nvs_safe_commit()(main/nvs_safe.h — adv 정지→commit→재개) 경유할 것.
+#  ※ POWER_V4에서는 3.3V 레일이 부스트 출력이라, 레일이 무너지기 전에
+#    SW_REG측 슈퍼바이저(TPS3839G25, V_off≈2.52V)가 먼저 EN을 내린다.
 CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
+
+# ★ 플래시 — 모듈이 ESP32-S3-WROOM-1-N16R8(16MB)인데 종전 설정은 2MB였다.
+#  2MB로 두면 부트로더 헤더가 14MB를 죽은 영역으로 남긴다.
+#  ※ 파티션 테이블은 일부러 건드리지 않았다(SINGLE_APP 유지). 플래시 크기와
+#    파티션 레이아웃은 독립이라, 크기만 고치면 erase-flash 없이 그대로 올라간다
+#    — NVS(as6221 주소 knob 등)가 보존된다. app 파티션 1MB가 모자라면 그때
+#    CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y로 올리고 erase-flash 할 것.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# ※ PSRAM(8MB, N16R8의 R8)은 의도적으로 켜지 않는다. 이 펌웨어는 힙이 남고,
+#   SPIRAM을 켜면 상시 리프레시 전류가 붙어 1년 전력 예산과 정면 충돌한다.
 
 # ★ light sleep 진단용(2026-08-03). 평상시엔 꺼둔다 — 슬립 경로에 훅이 추가된다.
 #  "Light sleep: ENABLED" 로그는 esp_pm_configure()가 설정을 수락했다는 뜻일 뿐

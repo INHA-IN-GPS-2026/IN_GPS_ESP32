@@ -8,7 +8,6 @@
 #include "esp_attr.h"
 #include <stdio.h>
 #include "nvs_flash.h"
-#include "led_strip.h"
 
 #include "board_pins.h"
 
@@ -42,20 +41,24 @@
    스코프로 레일을 보면 축전 구간에서 전압이 올라오고, 관측 구간에서 TX 펄스마다
    얼마나 내려앉는지가 한 화면에 나온다.
 
-   ⚠ ADXL335(~350µA)는 전원 게이팅 회로가 없어 deep sleep 중에도 계속 먹는다.
-     즉 축전 구간 실측은 7µA가 아니라 보드 기준 ~350µA대가 정상이다.
-     이 값이 안 나오면 회로를 먼저 의심할 것.
-     (아날로그 버전의 NTC 분압 ~330µA는 AS6221 I2C 전환으로 사라졌다 —
-      AS6221은 2개 합쳐 ~4µA 수준이라 이 기준선이 ~680µA에서 내려갔다.
-      ★수치는 데이터시트 기반 추정이며 실측 미검증.)
-   ⚠ ULP가 돌면 deep sleep 중에도 샘플링을 계속하므로, 이 테스트는
-     INGPS_ULP_ADC_OFF=1과 함께 써야 축전 구간이 깨끗하다. */
+   ★rev 4.0에서 축전 구간이 훨씬 깨끗해졌다. ADXL335(~350µA 상시)와
+     ULP/SARADC/RTC_PERIPH가 통째로 사라졌으므로, deep sleep 중 남는 것은
+     ESP 자체 ~7µA + ADXL345 ~50µA + AS6221 ~4µA 정도다.
+     ⚠ ADXL345는 deep sleep 중에도 measure 모드로 남아 계속 먹는다 —
+       전원 게이팅 회로가 없고 INT도 미접속이라 끌 방법이 소프트웨어뿐이다.
+       축전 구간을 최대한 비우려면 진입 직전 adxl345_test_force_standby()로
+       0.1µA까지 내릴 수 있다(다만 그러면 딥슬립 중 진동 감시가 0이 된다).
+     ★수치는 데이터시트 기반 추정이며 실측 미검증.
+
+   ⚠ 이 스위치의 원래 가설(1000µF 벌크캡)은 POWER_V4에서 0.47F 슈퍼캡으로
+     바뀌었다. τ = R5·C6 = 47s이므로 CAP_TEST_SLEEP_S=30은 한 τ도 안 된다 —
+     POWER_V4 보드에서 쓰려면 120s 이상으로 올릴 것
+     (Docs/INGPS_슈퍼캡_축전시간_분석_2026-08-11.md §6-1). */
 #define INGPS_CAP_CHARGE_TEST  0
 #define CAP_TEST_SLEEP_S       30      /* 축전 구간(deep sleep) */
-/* 관측 구간. ⚠ INGPS_ULP_ADC_OFF=0(실부하)이면 첫 광고까지 ~2.5s가 걸린다:
-   deep sleep wake는 ESP_RST_DEEPSLEEP이라 wdt_guard가 비정상 리셋으로 보지 않고
-   → fast_resume=false → ADXL zero 캘리브 1s가 매번 돌고 + NimBLE init 1.1s.
-   (캘리브가 10s이던 시절엔 ~11.5s였다 — 아래 ADXL_CAL_MS_NORMAL 주석 참조.)
+/* 관측 구간. 첫 광고까지 ~1.5s가 걸린다 — 거의 전부 NimBLE init(실측 1.1s+)이다.
+   rev 4.0에서 ADXL zero 캘리브 1s가 사라져 종전 ~2.5s에서 줄었다(ADXL345는
+   분산 공식이 DC를 소거해 캘리브가 필요 없다 — sensor.h 참조).
    이 값이 그보다 짧으면 광고가 시작되기도 전에 다시 잠들어 TX를 하나도 못 본다. */
 #define CAP_TEST_ACTIVE_MS     30000   /* 관측 구간(광고 동작) */
 
@@ -68,13 +71,17 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
-#include "ulp/ulp_init.h"
-#include "ulp_shared.h"
 #include "ble/ble_adv.h"
 #include "ble/adv_manager.h"
+#include "sensor/i2c_bus.h"
 #include "sensor/as6221.h"
+#include "sensor/adxl345.h"
 #include "sensor/sensor.h"
 #include "watchdog/wdt_guard.h"
+
+#if INGPS_HAS_RGB_LED
+#include "led_strip.h"
+#endif
 
 static const char *TAG = "APP_MAIN";
 
@@ -126,7 +133,7 @@ static IRAM_ATTR esp_err_t pm_ls_exit_cb(int64_t sleep_time_us, void *arg)
 }
 #endif
 
-/* 부팅 직후에는 NimBLE 초기화·ULP 캘리브가 잡은 일시적 락이 남아 오판하기
+/* 부팅 직후에는 NimBLE 초기화·I2C 센서 기동이 잡은 일시적 락이 남아 오판하기
    쉬우므로 정상 광고 루프에 들어간 뒤부터 주기적으로 찍는다.
    printf/esp_pm_dump_locks는 로그 시스템이 아니라 stdout으로 직접 쓰므로
    로그 레벨 NONE에서도 출력된다. */
@@ -263,8 +270,16 @@ void app_main(void)
     /* I2C 스캔 결과와 채널별 배정 주소를 부팅 시 1회 확인. 이게 닫혀 있으면
        "온도만 전부 NULL"일 때 센서 미연결인지 주소 불일치인지 구분할 수 없다. */
     esp_log_level_set("AS6221", ESP_LOG_INFO);
+    /* 버스 생성 성공/실패와 ADXL345 DEVID 확인 결과. 이게 닫혀 있으면
+       "RMS가 전부 0"일 때 센서 미실장인지 버스 문제인지 구분할 수 없다. */
+    esp_log_level_set("I2C_BUS", ESP_LOG_INFO);
+    esp_log_level_set("ADXL345", ESP_LOG_INFO);
 
-    /* RGB LED(GPIO48) 소등. WS2812B는 led_strip으로 RGB(0,0,0)를 보내야 꺼진다. */
+#if INGPS_HAS_RGB_LED
+    /* RGB LED(GPIO48) 소등. WS2812B는 led_strip으로 RGB(0,0,0)를 보내야 꺼진다.
+       ⚠ rev 4.0 실장 보드에는 WS2812B가 없다(IO48 미접속) — 기본 0.
+       데브킷 브링업에서만 board_pins.h의 INGPS_HAS_RGB_LED를 1로 둘 것.
+       슈퍼캡 부팅 마진이 빠듯하므로 실장 보드에서는 이 RMT 초기화 비용도 아깝다. */
     led_strip_handle_t led_strip;
     led_strip_config_t strip_cfg = {
         .strip_gpio_num = PIN_RGB_LED,
@@ -280,6 +295,7 @@ void app_main(void)
         led_strip_del(led_strip);
     }
     wdt_guard_feed();
+#endif
 
     /* max 80MHz: 이 펌웨어의 CPU 부하(페이로드 빌드+온도변환 수 ms/사이클)에
        160MHz는 불필요하고, 80MHz가 액티브 구간 전류와 BLE TX 피크 겹침
@@ -300,112 +316,34 @@ void app_main(void)
     fflush(stdout);
 #endif
 
-    /* 온도 I2C 프런트엔드(AS6221 ×2, GPIO13/14). ULP/SARADC와 핀·페리페럴이
-       겹치지 않으므로 기동 순서는 무관하지만, ULP보다 먼저 붙여 두면 첫 광고
-       시점에 온도가 이미 유효하다(AS6221은 전원 인가 후 typ 36ms에 첫 변환 완료).
-       실패해도 부팅은 계속한다 — 온도만 NULL로 나가고 진동은 정상 동작한다. */
-    if (!as6221_init()) {
-        ESP_LOGW(TAG, "AS6221 unavailable -> temp1/temp2 will advertise as invalid (NULL)");
-    }
-    wdt_guard_feed();   /* 최악(버스 사망) 8회 프로브 × 50ms = 0.4s 소모 */
+    /* === 센서 프런트엔드 (rev 4.0: 단일 I2C 버스 GPIO8/9) ==============
+       버스를 먼저 세우고 드라이버들은 device만 붙인다. 순서가 중요한 이유는
+       i2c_new_master_bus()가 포트당 1회만 성공하기 때문이다 — 구 리비전처럼
+       드라이버가 각자 버스를 만들면 두 번째가 ESP_ERR_INVALID_STATE로 죽는다.
 
-#if INGPS_ULP_ADC_OFF
-    printf("\n*** INGPS_ULP_ADC_OFF=1 : ULP/SARADC 미기동 (전류 A/B 실험 빌드) ***\n"
-           "*** 온도·RMS는 전부 0으로 광고됩니다. 측정 후 0으로 원복하세요.   ***\n\n");
-    fflush(stdout);
-#else
-    /* 비정상 리셋(WDT/panic/자가복구)에서 온 부팅이면 RTC_NOINIT에 보관해 둔
-       직전 zero를 재사용해 재캘리브를 생략 → 복구 다운타임 ~1.5s. */
-    int16_t saved_zx = 0, saved_zy = 0, saved_zz = 0;
-    bool fast_resume = wdt_guard_fast_resume(&saved_zx, &saved_zy, &saved_zz);
-
-    /* === zero 캘리브 시간 결정 ==========================================
-       zero의 유일한 역할은 dx(=raw−zero)를 노이즈 수준으로 붙들어 ULP의
-       sum_sq(uint32)가 넘치지 않게 하는 것이다. RMS 값 자체는 분산 공식
-           var = E[dx²] − (E[dx])²  =  E[raw²] − raw̄²
-       이라 zero가 대수적으로 소거된다 — 중력 1g든 기울기든 zero가 뭐든
-       상관없이 DC가 빠진다(sensor.c 참조). 즉 "정확한" zero가 아니라
-       "대략 맞는" zero면 충분하고, 종전 10초 평균은 어차피 버려지는
-       정밀도를 사고 있었다. 1초(≈195샘플)면 평균 표준오차가 1 count 아래다.
-
-       ⚠ 반대로 zero=0으로 두면 dx≈raw≈2048 → dx²≈4.2e6이 매 샘플 쌓여
-         194.7Hz 기준 n>1025(창 ≈5.3s)에서 sum_sq가 uint32를 넘긴다.
-         그러면 var이 음수로 계산되고 sensor.c의 클램프에 걸려 RMS가
-         세 축 모두 0으로 광고된다 — "고장"이 아니라 "진동 없음"처럼 보인다.
-         SAFE cadence가 10s이므로 SAFE에서 zero=0은 반드시 이 함정에 빠진다.
-         그래서 SAFE에서도 캘리브를 완전히 생략하지 않고 최소 표본만 잡는다. */
-    const uint32_t ADXL_CAL_MS_NORMAL = 1000;
-    /* SAFE는 복귀 속도가 우선이라 최소 표본만. FreeRTOS tick이 10ms(HZ=100)라
-       실제 대기는 40~50ms → 194.7Hz에서 ≈8~10샘플. zero 정밀도는 필요 없다. */
-    const uint32_t ADXL_CAL_MS_SAFE   = 50;
-
-    uint32_t cal_ms;
-    if (fast_resume) {
-        cal_ms = 0;                            /* 저장된 zero 재사용 */
-    } else if (wdt_guard_safe_mode()) {
-        cal_ms = ADXL_CAL_MS_SAFE;
+       무엇이 실패해도 부팅은 계속한다. 온도는 NULL 센티넬로, 진동은 0으로
+       광고되고 게이트웨이/서버 계약(mfg_data 13B)은 그대로 유지된다. */
+    if (!ingps_i2c_bus_init()) {
+        ESP_LOGE(TAG, "I2C 버스 기동 실패 -> 온도·진동 전부 무효로 광고된다");
     } else {
-        cal_ms = ADXL_CAL_MS_NORMAL;
+        /* AS6221을 먼저 붙인다. 전원 인가 후 typ 36ms에 첫 변환이 끝나므로
+           ADXL345 설정을 하는 사이에 온도가 유효해진다. */
+        if (!as6221_init()) {
+            ESP_LOGW(TAG, "AS6221 unavailable -> temp1/temp2 will advertise as invalid (NULL)");
+        }
+        wdt_guard_feed();   /* 최악(버스 사망) 8회 프로브 x 50ms = 0.4s 소모 */
+
+        /* ADXL345(0x53). ADXL335 + ULP SARADC 경로를 대체한다.
+           ★zero 캘리브레이션이 없다 — RMS를 분산 공식으로 내므로 중력 DC가
+             대수적으로 소거된다(sensor.h 참조). 구 경로가 부팅마다 쓰던
+             1초 캘리브(약 0.3J)가 여기서 사라졌고, 이것이 슈퍼캡 콜드스타트
+             마진에 직접 기여한다(E_boot 0.75J -> 0.45J).
+           여기서 측정을 시작해 두면 뒤이은 NimBLE init(~1.1s) 동안 FIFO가
+           가득 차(32샘플 = 320ms) 첫 광고부터 유효한 RMS가 실린다. */
+        if (!adxl345_init()) {
+            ESP_LOGW(TAG, "ADXL345 unavailable -> rms_x/y/z will advertise as 0");
+        }
     }
-
-    ESP_LOGI(TAG, "Start ULP ADXL vibration sampler%s...",
-             fast_resume ? " [fast resume]" : "");
-    start_ulp_adc_measurement(/*do_zero_cal=*/cal_ms > 0,
-                              saved_zx, saved_zy, saved_zz);
-
-    if (cal_ms > 0) {
-        /* 동적 zero 캘리브레이션: 정지 상태 raw 평균을 모아 zero로 설정.
-           이 동안 sum_sq 누적이 멈춰 RMS=0이지만, 첫 광고가 이 이후에 시작되므로
-           노출되지 않는다. TWDT(8s)보다 길어질 경우를 대비해 1초 단위로 쪼개 feed. */
-        ESP_LOGI(TAG, "Calibrating ADXL zero (hold device still for %ums)...",
-                 (unsigned)cal_ms);
-        for (uint32_t t = 0; t < cal_ms; ) {
-            uint32_t chunk = (cal_ms - t > 1000) ? 1000 : (cal_ms - t);
-            vTaskDelay(pdMS_TO_TICKS(chunk));
-            wdt_guard_feed();
-            t += chunk;
-        }
-
-        /* SAFE의 50ms 창은 ULP 기동 지연(첫 wake까지 ~5ms)과 겹치면 표본이
-           0으로 나올 수 있다. 그대로 내려가면 zero=0이 되어 위의 오버플로가
-           그대로 재현되므로, 표본이 생길 때까지 상한을 두고 더 기다린다. */
-        uint32_t n = ulp_shared.sample_count;
-        for (int retry = 0; n == 0 && retry < 10; retry++) {
-            vTaskDelay(pdMS_TO_TICKS(20));
-            wdt_guard_feed();
-            n = ulp_shared.sample_count;
-        }
-
-        if (n > 0) {
-            ulp_shared.zero_x = (int16_t)(ulp_shared.sum_raw_x / n);
-            ulp_shared.zero_y = (int16_t)(ulp_shared.sum_raw_y / n);
-            ulp_shared.zero_z = (int16_t)(ulp_shared.sum_raw_z / n);
-            ESP_LOGI(TAG, "Calibrated zero (N=%u, %ums): X=%d Y=%d Z=%d",
-                     (unsigned)n, (unsigned)cal_ms,
-                     ulp_shared.zero_x, ulp_shared.zero_y, ulp_shared.zero_z);
-            wdt_guard_save_zero(ulp_shared.zero_x, ulp_shared.zero_y, ulp_shared.zero_z);
-        } else {
-            /* ULP가 한 표본도 못 냈다 = ULP 자체가 안 돌고 있다는 뜻.
-               zero=0으로 남으므로 긴 cadence에서 RMS가 0으로 나온다.
-               헬스모니터의 ULP stall 감시가 곧 재부팅시킬 상황이다. */
-            ESP_LOGE(TAG, "ADXL zero cal: ULP 표본 0개 — zero=0 유지."
-                          " 긴 cadence에서 RMS가 0으로 나갈 수 있음 (ULP 미동작 의심)");
-        }
-
-        ulp_shared.sum_sq_x     = 0;
-        ulp_shared.sum_sq_y     = 0;
-        ulp_shared.sum_sq_z     = 0;
-        ulp_shared.sum_dx_x     = 0;
-        ulp_shared.sum_dx_y     = 0;
-        ulp_shared.sum_dx_z     = 0;
-        ulp_shared.sample_count = 0;
-        ulp_shared.cal_phase    = 0;
-    } else {
-        /* start_ulp_adc_measurement(false, ...)가 zero 적용+cal_phase=0까지 처리 */
-        ESP_LOGW(TAG, "WDT recovery boot: reusing saved zero (%d,%d,%d), skip cal",
-                 saved_zx, saved_zy, saved_zz);
-    }
-#endif  /* !INGPS_ULP_ADC_OFF */
     wdt_guard_feed();
 
     nimble_port_init();   /* BLE_INIT 실측 1.1s+ — TWDT 8s 내 여유 */
@@ -422,7 +360,7 @@ void app_main(void)
     xTaskCreatePinnedToCore(pm_debug_task, "pm_dbg", 3072, NULL, 1, NULL, 0);
 #endif
 
-    /* 부팅 감시 종료 + 앱 헬스체크(ULP·ADV) 활성화. 이 시점부터 15s 내
+    /* 부팅 감시 종료 + 앱 헬스체크(ACCEL·ADV) 활성화. 이 시점부터 15s 내
        광고 갱신이 한 번도 성공하지 못하면(sync 실패 포함) 자가 재부팅. */
     wdt_guard_boot_done();
 

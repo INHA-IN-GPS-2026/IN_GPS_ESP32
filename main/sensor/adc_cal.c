@@ -1,5 +1,4 @@
 #include "sensor/adc_cal.h"
-#include "sensor/sensor.h"
 
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"

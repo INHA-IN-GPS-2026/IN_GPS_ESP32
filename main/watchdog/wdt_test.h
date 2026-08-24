@@ -5,7 +5,8 @@
 //         (0이 아니면 컴파일 때 #warning으로 상기시켜 줌)
 //
 //   0 = off (운영 빌드. 주입 코드가 빌드에서 완전히 빠짐 — no-op inline)
-//   1 = ULP 정지         → L1 모니터가 ≤6s 내  "ULP stalled" 재부팅       (다음 부팅 reason=3)
+//   1 = 가속도 표본 정지  → L1 모니터가 ≤80s 내 "accelerometer samples stalled" (다음 부팅 reason=3)
+//                          (ADXL345 standby 주입. 드라이버 백오프 60s를 포함해 느리다)
 //   2 = ADV 갱신 정지     → L1 모니터가 15s 후  "BLE adv update stalled"  (다음 부팅 reason=3)
 //   3 = 태스크 무한 spin  → L2 Task WDT가 ≤8s 내 panic 재부팅             (다음 부팅 reason=6)
 //   4 = 인터럽트 정지     → L3 INT WDT가 ≤300ms 내 panic 재부팅           (다음 부팅 reason=5)
@@ -15,13 +16,13 @@
 //   그 전까지는 정상 동작(1초 광고 갱신)을 관찰할 수 있다.
 // 재부팅 후 확인 포인트:
 //   - "reset reason=N" 이 위 표와 일치하는지
-//   - "[fast resume]" + "reusing saved zero" 로그 (재캘리브 생략)
 //   - BLE 스캐너에서 광고 끊김이 ~2s 이내인지
+//     (rev 4.0부터 zero 캘리브가 없어 재부팅 후 첫 광고가 더 빨라졌다)
 //   - 장애 코드를 켠 채 두면 3회째부터 "crash-loop suspected" 경고가 뜨는지
-//     (mode 1은 재부팅 후 ULP가 살아나므로 crash-loop은 mode 3/4/5로 확인)
+//     (mode 1은 재부팅 후 센서가 살아나므로 crash-loop은 mode 3/4/5로 확인)
 //
-// 참고: "부팅 구간 감시" 테스트(캘리브 중 TWDT)는 스위치로 못 만들고,
-//       app_main.c 캘리브 루프의 wdt_guard_feed()를 수동 주석 처리해서 확인.
+// 참고: "부팅 구간 감시" 테스트는 스위치로 못 만들고, app_main.c의
+//       wdt_guard_feed() 호출을 수동 주석 처리해서 확인한다.
 #pragma once
 
 #include <stdbool.h>
