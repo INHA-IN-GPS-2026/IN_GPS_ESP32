@@ -27,6 +27,30 @@
    슬립/웨이크 트랜지언트를 제거한 대조군 측정 전용이다. */
 #define INGPS_LIGHT_SLEEP  1
 
+/* ★light sleep floor 단독 측정용 (branch Test/BLE_off_floor 전용).
+   2026-08-26: 0.47F 슈퍼캡 완전충전 후 방전 실측(discharge08260.csv, Vstart
+   4.61V->Vend 3.30V, 210s)이 Q=C·ΔV/t로 평균 2.93mA를 냈다 — 1년 목표
+   (252µA)의 11.6배, 설계문서 자체의 "완전 미최적화" 추정치(~1150µA)보다도
+   높다. 그런데 INGPS_PM_DEBUG로 확인한 light sleep 점유율은 93% — "슬립을
+   못 잔다"는 아니다. 남는 설명은 ① 슬립 중 전류 자체가 240µA 가정보다 훨씬
+   높거나(ADXL345 3.3V 실측 미검증 — deep/light sleep 중에도 measure 모드로
+   상시 전류, 전원 게이팅 회로 없음), ② 액티브 구간이 (1-93%)=7%보다 훨씬
+   길다, 둘 중 하나(또는 둘 다). 설계문서 §9 power_exp ①(light sleep floor
+   단독, BLE off)을 그대로 구현해 가른다.
+
+   BLE 스택(NimBLE init/host/GAP/GATT, on_sync, adv_cycle_task)을 통째로
+   기동하지 않는다. I2C 센서(AS6221/ADXL345)는 정상대로 켜서 "BLE 없이
+   센서만 상시 켜진 상태"의 순수 floor를 잰다 — sensor 자체가 범인인지
+   BLE/adv 경로가 범인인지가 이 한 스위치로 갈린다.
+
+   ⚠ adv_cycle_task가 안 도므로 WDT_HB_ADV/WDT_HB_ACCEL이 영원히 안
+     갱신된다 — wdt_guard_set_hb_stale()로 두 heartbeat를 늘려두지 않으면
+     15s/75s 후 자가 재부팅 루프에 빠진다(app_main() 아래에서 처리).
+   ⚠ 측정 후 반드시 0으로 원복할 것 — 이 빌드는 BLE가 아예 없어 게이트웨이에
+     안 잡힌다(정상 운용 불가, 진단 전용). */
+#define INGPS_BLE_DISABLED  0
+#define INGPS_BLE_OFF_HB_STALE_MS  (24U * 3600U * 1000U)  /* 24h — 벤치 측정 중 오탐 재부팅 방지 */
+
 /* ★벌크캡 축전 검증 모드 (branch I_Current_test 전용).
    가설: 1000µF 벌크캡이 충분히 충전되기 전에 부하가 걸려, 첫 TX에서 레일이
    무너진다. 이를 가르려면 "부하가 거의 없는 구간"을 강제로 만들어 그때
@@ -87,6 +111,7 @@ static const char *TAG = "APP_MAIN";
 
 uint8_t g_own_addr_type = BLE_OWN_ADDR_RANDOM;
 
+#if !INGPS_BLE_DISABLED
 static const uint8_t s_ble_random_addr[6] = {
     ESP_DEVICE_ID, 0xEE, 0xDD, 0xCC, 0xBB, 0xCA
 };
@@ -115,6 +140,7 @@ static void nimble_host_task(void *param)
     nimble_port_freertos_deinit();
     vTaskDelete(NULL);
 }
+#endif /* !INGPS_BLE_DISABLED */
 
 #if INGPS_PM_DEBUG
 
@@ -346,6 +372,7 @@ void app_main(void)
     }
     wdt_guard_feed();
 
+#if !INGPS_BLE_DISABLED
     nimble_port_init();   /* BLE_INIT 실측 1.1s+ — TWDT 8s 내 여유 */
     ble_svc_gap_init();
     ble_svc_gatt_init();
@@ -355,6 +382,16 @@ void app_main(void)
     ble_hs_cfg.sync_cb = on_sync;
 
     nimble_port_freertos_init(nimble_host_task);
+#else
+    /* BLE 미기동 -> adv_cycle_task도 없음 -> WDT_HB_ADV/ACCEL을 kick할 사람이
+       없다. wdt_guard_boot_done()이 곧 ADV 시계를 arm하므로 그 전에 두
+       heartbeat의 stale 한도를 늘려 벤치 측정 중 오탐 재부팅을 막는다. */
+    printf("\n*** INGPS_BLE_DISABLED=1 : BLE 스택 미기동 (light sleep floor 단독 측정 빌드) ***\n"
+           "*** 게이트웨이에 안 잡힘 — 진단 전용, 측정 후 0으로 원복할 것 ***\n\n");
+    fflush(stdout);
+    wdt_guard_set_hb_stale(WDT_HB_ADV, INGPS_BLE_OFF_HB_STALE_MS);
+    wdt_guard_set_hb_stale(WDT_HB_ACCEL, INGPS_BLE_OFF_HB_STALE_MS);
+#endif
 
 #if INGPS_PM_DEBUG
     xTaskCreatePinnedToCore(pm_debug_task, "pm_dbg", 3072, NULL, 1, NULL, 0);
