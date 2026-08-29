@@ -62,6 +62,8 @@
    이 값이 그보다 짧으면 광고가 시작되기도 전에 다시 잠들어 TX를 하나도 못 본다. */
 #define CAP_TEST_ACTIVE_MS     30000   /* 관측 구간(광고 동작) */
 
+#define TEST
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
