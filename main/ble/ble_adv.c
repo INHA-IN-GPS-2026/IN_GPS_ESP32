@@ -95,10 +95,11 @@ static void build_mfg_data(adv_meas_t *out)
     if (ok1) s_last_t1 = temp1;
     if (ok2) s_last_t2 = temp2;
 
-    mfg_data[2]  = (uint8_t)((uint16_t)temp1 & 0xFF);
-    mfg_data[3]  = (uint8_t)((uint16_t)temp1 >> 8);
-    mfg_data[4]  = (uint8_t)((uint16_t)temp2 & 0xFF);
-    mfg_data[5]  = (uint8_t)((uint16_t)temp2 >> 8);
+
+    mfg_data[2]  = (uint8_t)((uint16_t)temp2 & 0xFF);
+    mfg_data[3]  = (uint8_t)((uint16_t)temp2 >> 8);
+    mfg_data[4]  = (uint8_t)((uint16_t)temp1 & 0xFF);
+    mfg_data[5]  = (uint8_t)((uint16_t)temp1 >> 8);
     mfg_data[6]  = (uint8_t)(rms_x_mg & 0xFF);
     mfg_data[7]  = (uint8_t)(rms_x_mg >> 8);
     mfg_data[8]  = (uint8_t)(rms_y_mg & 0xFF);
