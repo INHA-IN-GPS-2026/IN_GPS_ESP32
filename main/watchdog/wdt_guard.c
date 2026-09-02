@@ -35,6 +35,55 @@
 
 static const char *TAG = "WDT_GUARD";
 
+#if INGPS_WDT_DISABLED
+/* ===== 진단 빌드 (INGPS_WDT_DISABLED=1, wdt_guard.h) ===================
+   전 계층 해제. 스위치의 의미·한계는 wdt_guard.h 상단 주석 참조.
+   호출부(app_main / ble_adv)는 그대로 두고 여기서만 갈린다 — 측정 빌드와
+   운영 빌드의 코드 경로 차이를 이 파일 하나로 가둔다. */
+
+void wdt_guard_feed(void)                                    { }
+void wdt_guard_task_subscribe(void)                          { }
+void wdt_guard_heartbeat(wdt_hb_id_t id)                     { (void)id; }
+void wdt_guard_set_hb_stale(wdt_hb_id_t id, uint32_t ms)     { (void)id; (void)ms; }
+bool wdt_guard_safe_mode(void)                               { return false; }
+void wdt_guard_boot_done(void)                               { }
+
+/* 워치독이 아니라 명시적 에러 핸들러라 진단 빌드에서도 살려 둔다. */
+void wdt_guard_reboot(const char *reason)
+{
+    ESP_LOGE(TAG, "explicit reboot: %s (WDT 해제 빌드)", reason ? reason : "(null)");
+    vTaskDelay(pdMS_TO_TICKS(150));
+    esp_restart();
+    while (1) { }
+}
+
+void wdt_guard_init(void)
+{
+    /* reset reason은 반드시 남긴다 — "130초 만에 죽었다"가 방전인지 재부팅
+       루프인지 가르는 유일한 단서다. POWERON/BROWNOUT/TASK_WDT/INT_WDT/PANIC/SW
+       중 무엇이 찍히는지가 곧 진단 결과다. */
+    esp_reset_reason_t rr = esp_reset_reason();
+    ESP_LOGW(TAG, "*** WDT DISABLED (진단 빌드) *** reset reason=%d", (int)rr);
+
+    /* CONFIG_ESP_TASK_WDT_INIT=y이므로 IDF가 이미 기본 5s TWDT를 양 코어 idle에
+       걸어 둔 채로 app_main에 들어온다. 재설정을 "생략"하는 것만으로는 안 꺼진다.
+       esp_task_wdt_deinit()이 idle 구독을 먼저 정리한 뒤 타이머를 내린다. */
+    esp_err_t err = esp_task_wdt_deinit();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_task_wdt_deinit 실패: %s — L2 TWDT가 아직 살아 있다",
+                 esp_err_to_name(err));
+    } else {
+        ESP_LOGW(TAG, "Task WDT(L2) 해제. INT WDT(L3, 300ms)와 부트로더 RTC WDT(L5)는"
+                      " sdkconfig 소관이라 그대로 남아 있다");
+    }
+
+    /* 헬스모니터 태스크를 만들지 않는다 → 2초 주기 wake가 사라진다.
+       INGPS_BLE_DISABLED=1 빌드에서는 이것이 유일한 주기적 waker였으므로,
+       이 빌드의 light sleep 구간은 사실상 무한이 된다. */
+}
+
+#else  /* !INGPS_WDT_DISABLED — 정상 운용 빌드 ========================== */
+
 /* === 튜닝 파라미터 ==================================================== */
 #define WDT_TWDT_TIMEOUT_MS    8000   /* Task WDT. adv 루프(1s)·부팅 단계 대비 여유 */
 #define WDT_MONITOR_PERIOD_MS  2000   /* 헬스모니터 점검 주기 */
@@ -294,3 +343,5 @@ void wdt_guard_boot_done(void)
              (unsigned)WDT_TWDT_TIMEOUT_MS, (unsigned)WDT_MONITOR_PERIOD_MS,
              (unsigned)WDT_HB_ADV_STALE_MS, (unsigned)WDT_HB_ACCEL_STALE_MS);
 }
+
+#endif /* !INGPS_WDT_DISABLED */

@@ -11,80 +11,25 @@
 
 #include "board_pins.h"
 
-/* 1이면 15초마다 light sleep 실적(진입 횟수·누적 수면시간·수면 점유율)과
-   PM 락 목록을 출력한다.
-     - "Light sleep: ENABLED" 로그는 esp_pm_configure()가 설정을 수락했다는 뜻일 뿐
-       실제 진입을 보장하지 않는다. 진입 여부는 아래 카운터로만 확정할 수 있다.
-     - 수면 점유율이 0.0%면 아예 못 자는 것 → 락 목록에서 type=NO_LIGHT_SLEEP이면서
-       count>0인 항목의 소유자가 범인이다.
-     - 락이 전부 0인데 점유율이 낮으면 락 문제가 아니라 wake 빈도 문제다.
-   진입 횟수 계측에는 CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y가 필요하다(없으면 락 목록만).
-   ⚠ 전류 실측 시에는 0으로 되돌릴 것 — UART 출력 자체가 CPU를 깨우고 락을 잡는다. */
+/* Light-sleep 통계와 PM lock을 15초마다 출력한다. 전류 측정 시에는 끈다. */
 #define INGPS_PM_DEBUG  0
 
-/* light sleep on/off 토글. 1 = 정상(1년 전력 설계의 기본값),
-   0 = DFS만 쓰고 CPU 상시 on. 0은 평균 전류가 ~5배 나빠져 1년 목표가 불가능하며
-   슬립/웨이크 트랜지언트를 제거한 대조군 측정 전용이다. */
+/* 정상 운용은 light sleep을 사용한다. 0은 전력 비교 시험 전용이다. */
 #define INGPS_LIGHT_SLEEP  1
 
-/* ★light sleep floor 단독 측정용 (branch Test/BLE_off_floor 전용).
-   2026-08-26: 0.47F 슈퍼캡 완전충전 후 방전 실측(discharge08260.csv, Vstart
-   4.61V->Vend 3.30V, 210s)이 Q=C·ΔV/t로 평균 2.93mA를 냈다 — 1년 목표
-   (252µA)의 11.6배, 설계문서 자체의 "완전 미최적화" 추정치(~1150µA)보다도
-   높다. 그런데 INGPS_PM_DEBUG로 확인한 light sleep 점유율은 93% — "슬립을
-   못 잔다"는 아니다. 남는 설명은 ① 슬립 중 전류 자체가 240µA 가정보다 훨씬
-   높거나(ADXL345 3.3V 실측 미검증 — deep/light sleep 중에도 measure 모드로
-   상시 전류, 전원 게이팅 회로 없음), ② 액티브 구간이 (1-93%)=7%보다 훨씬
-   길다, 둘 중 하나(또는 둘 다). 설계문서 §9 power_exp ①(light sleep floor
-   단독, BLE off)을 그대로 구현해 가른다.
+/* BLE를 끄고 센서와 light-sleep의 바닥 전류만 측정하는 진단 옵션이다. */
+#define INGPS_BLE_DISABLED  1
+#define INGPS_BLE_OFF_HB_STALE_MS  (24U * 3600U * 1000U)
 
-   BLE 스택(NimBLE init/host/GAP/GATT, on_sync, adv_cycle_task)을 통째로
-   기동하지 않는다. I2C 센서(AS6221/ADXL345)는 정상대로 켜서 "BLE 없이
-   센서만 상시 켜진 상태"의 순수 floor를 잰다 — sensor 자체가 범인인지
-   BLE/adv 경로가 범인인지가 이 한 스위치로 갈린다.
+/* ★워치독 전 계층을 끄는 진단 스위치는 watchdog/wdt_guard.h의
+   INGPS_WDT_DISABLED에 있다(여기가 아니다 — wdt_guard.c에서도 보여야 하므로).
+   1로 두면 L1 헬스모니터(2초 주기 wake)와 L2 Task WDT가 사라진다.
+   INGPS_BLE_DISABLED=1과 함께 쓰면 주기적 waker가 하나도 남지 않는다. */
 
-   ⚠ adv_cycle_task가 안 도므로 WDT_HB_ADV/WDT_HB_ACCEL이 영원히 안
-     갱신된다 — wdt_guard_set_hb_stale()로 두 heartbeat를 늘려두지 않으면
-     15s/75s 후 자가 재부팅 루프에 빠진다(app_main() 아래에서 처리).
-   ⚠ 측정 후 반드시 0으로 원복할 것 — 이 빌드는 BLE가 아예 없어 게이트웨이에
-     안 잡힌다(정상 운용 불가, 진단 전용). */
-#define INGPS_BLE_DISABLED  0
-#define INGPS_BLE_OFF_HB_STALE_MS  (24U * 3600U * 1000U)  /* 24h — 벤치 측정 중 오탐 재부팅 방지 */
-
-/* ★벌크캡 축전 검증 모드 (branch I_Current_test 전용).
-   가설: 1000µF 벌크캡이 충분히 충전되기 전에 부하가 걸려, 첫 TX에서 레일이
-   무너진다. 이를 가르려면 "부하가 거의 없는 구간"을 강제로 만들어 그때
-   레일이 실제로 올라오는지 봐야 한다.
-
-   동작:
-     콜드부팅(전원 인가/브라운아웃 리셋) → 아무것도 켜지 않고 즉시 deep sleep
-       → CAP_TEST_SLEEP_S 동안 축전 (ESP 자체 소모 ~7µA)
-     타이머 wake → 정상 부팅(광고 시작) → CAP_TEST_ACTIVE_MS 관측
-       → 다시 deep sleep → 반복
-
-   스코프로 레일을 보면 축전 구간에서 전압이 올라오고, 관측 구간에서 TX 펄스마다
-   얼마나 내려앉는지가 한 화면에 나온다.
-
-   ★rev 4.0에서 축전 구간이 훨씬 깨끗해졌다. ADXL335(~350µA 상시)와
-     ULP/SARADC/RTC_PERIPH가 통째로 사라졌으므로, deep sleep 중 남는 것은
-     ESP 자체 ~7µA + ADXL345 ~50µA + AS6221 ~4µA 정도다.
-     ⚠ ADXL345는 deep sleep 중에도 measure 모드로 남아 계속 먹는다 —
-       전원 게이팅 회로가 없고 INT도 미접속이라 끌 방법이 소프트웨어뿐이다.
-       축전 구간을 최대한 비우려면 진입 직전 adxl345_test_force_standby()로
-       0.1µA까지 내릴 수 있다(다만 그러면 딥슬립 중 진동 감시가 0이 된다).
-     ★수치는 데이터시트 기반 추정이며 실측 미검증.
-
-   ⚠ 이 스위치의 원래 가설(1000µF 벌크캡)은 POWER_V4에서 0.47F 슈퍼캡으로
-     바뀌었다. τ = R5·C6 = 47s이므로 CAP_TEST_SLEEP_S=30은 한 τ도 안 된다 —
-     POWER_V4 보드에서 쓰려면 120s 이상으로 올릴 것
-     (Docs/INGPS_슈퍼캡_축전시간_분석_2026-08-11.md §6-1). */
+/* 콜드부팅 직후 deep sleep으로 축전한 뒤 활성 구간을 반복하는 전원 시험 옵션이다. */
 #define INGPS_CAP_CHARGE_TEST  0
-#define CAP_TEST_SLEEP_S       30      /* 축전 구간(deep sleep) */
-/* 관측 구간. 첫 광고까지 ~1.5s가 걸린다 — 거의 전부 NimBLE init(실측 1.1s+)이다.
-   rev 4.0에서 ADXL zero 캘리브 1s가 사라져 종전 ~2.5s에서 줄었다(ADXL345는
-   분산 공식이 DC를 소거해 캘리브가 필요 없다 — sensor.h 참조).
-   이 값이 그보다 짧으면 광고가 시작되기도 전에 다시 잠들어 TX를 하나도 못 본다. */
-#define CAP_TEST_ACTIVE_MS     30000   /* 관측 구간(광고 동작) */
+#define CAP_TEST_SLEEP_S       30
+#define CAP_TEST_ACTIVE_MS     30000
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -348,7 +293,9 @@ void app_main(void)
        드라이버가 각자 버스를 만들면 두 번째가 ESP_ERR_INVALID_STATE로 죽는다.
 
        무엇이 실패해도 부팅은 계속한다. 온도는 NULL 센티넬로, 진동은 0으로
-       광고되고 게이트웨이/서버 계약(mfg_data 13B)은 그대로 유지된다. */
+       광고되고 게이트웨이/서버 계약(mfg_data 앞 13B, offset 0..12)은 그대로
+       유지된다. (mfg_data 전체는 15B — [13..14]에 SHF 추정 core_temp가
+       추가됐으나 게이트웨이/서버는 이를 읽지 않는다. ble/ble_adv.c 참조.) */
     if (!ingps_i2c_bus_init()) {
         ESP_LOGE(TAG, "I2C 버스 기동 실패 -> 온도·진동 전부 무효로 광고된다");
     } else {

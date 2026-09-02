@@ -1,17 +1,5 @@
 /* nvs_safe.h — 플래시 write를 BLE TX 전류 스파이크와 시간 분리하는 커밋 래퍼.
- *
- * 배경(2026-07-31): BOD를 IDF 기본 LVL7(≈2.44V)로 원복했다. 이 임계는 플래시
- * write 안전선(~2.7V)보다 낮으므로, TX 스파이크로 레일이 주저앉은 순간에
- * flash program/erase가 겹치면 BOD 리셋 이전에 플래시가 스펙 밖 전압에서
- * 쓰기를 진행할 수 있다 → NVS 조용한 손상 위험(adc_cal 계수, advm knob 등).
- *
- * 규칙: 런타임에서 nvs_commit()을 직접 부르지 말 것. 반드시 이 래퍼 경유.
- *  - 현재(2026-07-31) 펌웨어에 런타임 NVS 쓰기는 없다(knob은 파티션 툴로
- *    주입하고 adv_manager는 READONLY로만 연다). 이 래퍼는 앞으로 생길 쓰기
- *    경로(런타임 knob 변경, 통계 저장 등)용 기반이다.
- *  - IDF 내부 쓰기(phy cal 데이터 등)는 BT 기동 초기에 일어나 광고와 겹치지
- *    않으므로 별도 처리 불필요.
- */
+*/
 #pragma once
 
 #include "esp_err.h"

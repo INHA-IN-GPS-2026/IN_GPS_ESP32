@@ -4,6 +4,43 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* ★★ 진단 전용: 워치독 계층 전체 비활성 (벤치 전력 측정용) ★★
+ *
+ * 1로 두면 이 파일의 공개 API가 전부 no-op이 되고, 추가로:
+ *   - L1 헬스모니터 태스크(wdt_monitor_task)를 **생성하지 않는다**.
+ *     → 2초 주기 wake가 사라진다. INGPS_BLE_DISABLED=1 빌드에서는 이 태스크가
+ *       칩을 깨우는 **유일한** 주기적 소스이므로, 끄면 light sleep 구간이
+ *       사실상 무한이 되어 "센서+슬립 순수 floor"가 측정된다.
+ *   - IDF가 부팅 시 자동 기동한 Task WDT(L2)를 esp_task_wdt_deinit()으로
+ *     **해제한다**. CONFIG_ESP_TASK_WDT_INIT=y라 그냥 두면 기본 5초 TWDT가
+ *     양 코어 idle을 계속 감시하므로, 재설정을 건너뛰는 것만으로는 부족하다.
+ *   - crash-loop escalation(백오프 딥슬립 / SAFE 모드)도 함께 비활성된다.
+ *     즉 재부팅이 나도 스스로 딥슬립으로 도망가지 않으므로, "재부팅 루프인가"를
+ *     전류 파형과 부팅 로그로 그대로 관찰할 수 있다.
+ *
+ * ★유지되는 것 (진단에 필요하므로 일부러 남긴다):
+ *   - esp_reset_reason() 판독과 WDT_GUARD 로그 1줄. 재부팅 루프 여부를
+ *     확인하려면 이게 반드시 남아 있어야 한다.
+ *   - wdt_guard_reboot(): 워치독이 아니라 명시적 에러 핸들러다(광고 인코딩
+ *     실패 등). 끄면 실패를 조용히 삼키게 되므로 그대로 둔다.
+ *
+ * ★이 스위치가 끄지 **못하는** 것 (sdkconfig 소관, 코드로 못 만짐):
+ *   - L3 Interrupt WDT  : CONFIG_ESP_INT_WDT (=y, 300ms)
+ *   - L5 부트로더 RTC WDT: CONFIG_BOOTLOADER_WDT_ENABLE
+ *   L2까지 껐는데도 재부팅이 계속되면 원인은 이 둘 아니면 브라운아웃/슈퍼바이저다
+ *   — 그 경우 부팅 로그의 reset reason으로 갈린다(INT_WDT vs BROWNOUT vs POWERON).
+ *
+ * ⚠ 운영 배포 금지. 필드 노드가 멈춰도 아무도 살려내지 않는다.
+ *   측정이 끝나면 반드시 0으로 되돌릴 것.
+ */
+#ifndef INGPS_WDT_DISABLED
+#define INGPS_WDT_DISABLED  0
+#endif
+
+#if INGPS_WDT_DISABLED
+#warning "INGPS_WDT_DISABLED=1 — 워치독 전 계층 해제된 진단 빌드! 운영 배포 금지"
+#endif
+
 /* 앱 레벨 heartbeat 클라이언트.
    HW WDT(Task/INT WDT)가 못 보는 "태스크는 도는데 논리적으로 죽은" 상태를
    감지하기 위한 신선도 검사 슬롯. 성공 시점마다 wdt_guard_heartbeat()로 kick. */
