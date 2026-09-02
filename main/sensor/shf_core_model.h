@@ -27,21 +27,6 @@
 // i.e. two unrelated methods (transient curve fit vs steady-state power calc)
 // agree, which is why R_loss is now trusted as a fixed anchor instead of free.
 //
-// !! UNVERIFIED ON THIS HARDWARE / TARGET !!
-//   - Trained on motor-bench thermistor data, NOT on IN-GPS AS6221 probes.
-//   - Assumes physical placement convention: TH1 (temp1) = probe ON/NEAR the
-//     monitored equipment surface (T_ambient role), TH2 (temp2) = probe placed
-//     away from the heat source as a room/ambient reference (T_room role).
-//     If both AS6221 probes are mounted on the equipment itself, this model's
-//     inputs do not match its training distribution -- re-validate before use.
-//   - R_loss=0.0115 degC/W and C_hat=100026.0 J/degC are now real, cross-checked
-//     units -- but G_hat=0.000074 is not (T_ambient was never a real power input,
-//     it's a correlated proxy signal; G_hat decayed toward ~0 during training,
-//     meaning the R/C relaxation term is doing most of the physics-loss work).
-//   - No on-device (ESP32-S3) accuracy/latency measurement has been done yet.
-//   - NOT WIRED IN: this header is not yet #included or called from
-//     app_main.c / any sensor pipeline. Integration point (mfg_data field
-//     vs. local threshold-only use) still needs a decision -- see conversation.
 
 #ifndef SHF_CORE_MODEL_H
 #define SHF_CORE_MODEL_H
@@ -61,8 +46,11 @@
 
 /**
  * @brief Estimate equipment core temperature from two AS6221 readings.
- * @param t_ambient_c  TH1 (probe on/near the monitored equipment surface), degC.
- * @param t_room_c     TH2 (probe placed away as ambient/room reference), degC.
+ * @param t_ambient_c  probe on/near the monitored equipment surface, degC.
+ *                      Which physical channel (TH1/TH2) this is depends on
+ *                      install -- see call site (ble_adv.c) for the current
+ *                      mapping, not this file.
+ * @param t_room_c     probe placed away as ambient/room reference, degC.
  * @return Estimated core temperature, degC. See file header for validated
  *         accuracy (MAE/RMSE) and placement-convention caveats.
  */

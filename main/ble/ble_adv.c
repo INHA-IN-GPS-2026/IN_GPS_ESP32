@@ -1,5 +1,6 @@
 #include "ble_adv.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -14,6 +15,7 @@
 #include "sensor/sensor.h"
 #include "sensor/as6221.h"
 #include "sensor/adxl345.h"
+#include "sensor/shf_core_model.h"
 #include "watchdog/wdt_guard.h"
 #include "adv_manager.h"
 
@@ -23,10 +25,9 @@ static const char *TAG = "BLE_ADV";
 #define ESP_DEVICE_ID  0x01
 
 /*
- * Manufacturer Specific Data (13바이트) — 게이트웨이/서버와의 계약.
+ * Manufacturer Specific Data (15바이트) — 게이트웨이/서버와의 계약.
  * 바이트 배치를 바꾸면 게이트웨이 파서와 temperature_log 스키마가 함께 깨진다.
- * ★I2C 전환에서도 이 레이아웃은 그대로다 — 온도 취득 경로만 바뀌었고
- *   게이트웨이/서버/앱은 손댈 필요가 없다.
+ * ★[0..12]은 기존 그대로 불변 — 신규 필드 [13..14]는 끝에 append했다.
  *   [0..1]   company ID (LE) = 0x1234
  *   [2..3]   temp1   (°C × 100, int16 LE)   AS6221 #1 (TH1, I2C)
  *   [4..5]   temp2   (°C × 100, int16 LE)   AS6221 #2 (TH2, I2C)
@@ -34,6 +35,11 @@ static const char *TAG = "BLE_ADV";
  *   [8..9]   rms_y   (mg, uint16 LE)
  *   [10..11] rms_z   (mg, uint16 LE)
  *   [12]     device ID
+ *   [13..14] core_temp (°C × 100, int16 LE)  SHF(PINN) 추정 내부온도 — 실측 아님.
+ *            temp1/temp2 중 하나라도 읽기 실패면 AS6221_TEMP_INVALID_X100(-32768).
+ *            게이트웨이가 offset [13..14]를 읽어 MQTT JSON "core_temp" 키(÷100)로
+ *            ingps/sensor에 실어 보내야 서버(mqtt_subscriber.py→temperature_log)와
+ *            앱까지 값이 도달한다.
  */
 static uint8_t mfg_data[] = {
     0x34, 0x12,
@@ -42,7 +48,8 @@ static uint8_t mfg_data[] = {
     0x00, 0x00,
     0x00, 0x00,
     0x00, 0x00,
-    ESP_DEVICE_ID
+    ESP_DEVICE_ID,
+    0x00, 0x00
 };
 
 /* 최신 측정 스냅샷 — adv_manager 상태 전이 입력용.
@@ -95,6 +102,20 @@ static void build_mfg_data(adv_meas_t *out)
     if (ok1) s_last_t1 = temp1;
     if (ok2) s_last_t2 = temp2;
 
+    /* SHF(PINN) 추정 내부온도. temp1(TH1)="표면", temp2(TH2)="실온" 역할로
+       학습된 모델이라(ml_validation/scripts/export_shf_pinn_to_c.py 참조) 그
+       순서로 넣는다. 둘 중 하나라도 읽기 실패하면 무효 센티넬을 그대로 싣는다 —
+       서버 mqtt_subscriber.py의 _cast_float()가 <-200°C를 걸러 NULL로 저장한다. */
+    int16_t core_temp_x100 = AS6221_TEMP_INVALID_X100;
+    if (ok1 && ok2) {
+        float core_c = shf_predict_core_temp(temp1 / 100.0f, temp2 / 100.0f);
+        long v = lroundf(core_c * 100.0f);
+        /* int16 포화. 하한을 -32767로 두어 계산 결과가 센티넬(-32768)과
+           충돌하지 않게 한다. */
+        if (v >  32767) v =  32767;
+        if (v < -32767) v = -32767;
+        core_temp_x100 = (int16_t)v;
+    }
 
     mfg_data[2]  = (uint8_t)((uint16_t)temp2 & 0xFF);
     mfg_data[3]  = (uint8_t)((uint16_t)temp2 >> 8);
@@ -106,6 +127,8 @@ static void build_mfg_data(adv_meas_t *out)
     mfg_data[9]  = (uint8_t)(rms_y_mg >> 8);
     mfg_data[10] = (uint8_t)(rms_z_mg & 0xFF);
     mfg_data[11] = (uint8_t)(rms_z_mg >> 8);
+    mfg_data[13] = (uint8_t)((uint16_t)core_temp_x100 & 0xFF);
+    mfg_data[14] = (uint8_t)((uint16_t)core_temp_x100 >> 8);
 
     if (out) {
         uint16_t m = rms_x_mg;
@@ -123,6 +146,9 @@ static void build_mfg_data(adv_meas_t *out)
     ESP_LOGD(TAG, "T1=%.2fC(0x%02X %s) | T2=%.2fC(0x%02X %s)",
              temp1 / 100.0f, as6221_addr(AS6221_CH_TH1), ok1 ? "ok" : "FAIL",
              temp2 / 100.0f, as6221_addr(AS6221_CH_TH2), ok2 ? "ok" : "FAIL");
+    ESP_LOGD(TAG, "core(SHF est,not measured)=%s%.2fC",
+             (core_temp_x100 == AS6221_TEMP_INVALID_X100) ? "INVALID " : "",
+             core_temp_x100 / 100.0f);
 }
 
 /* mfg_data → BLE advertising payload로 인코딩.
