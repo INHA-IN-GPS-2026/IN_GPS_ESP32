@@ -15,6 +15,10 @@
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#if CONFIG_INGPS_LOGGER_DIAGNOSTICS
+#include "soc/rtc_cntl_reg.h"
+#define ULP_DEBUG(name) (*(volatile const uint32_t *)&ulp_debug_##name)
+#endif
 
 extern const uint8_t ulp_logger_bin_start[] asm("_binary_ulp_logger_bin_start");
 extern const uint8_t ulp_logger_bin_end[] asm("_binary_ulp_logger_bin_end");
@@ -24,6 +28,25 @@ static RTC_FAST_ATTR uint64_t deadline;
 static volatile log_shared_t *const state = (volatile log_shared_t *)&ulp_shared;
 
 static void barrier(void) { __asm__ volatile("memw" ::: "memory"); }
+static void log_diagnostics(const char *phase)
+{
+#if CONFIG_INGPS_LOGGER_DIAGNOSTICS
+    ESP_LOGI("LOGGER_DIAG", "%s reset=%d wake=%d init=%u progress=%u produced=%u stored=%u done=%u stalled=%u",
+        phase, (int)esp_reset_reason(), (int)esp_sleep_get_wakeup_cause(),
+        (unsigned)state->initialized, (unsigned)state->progress, (unsigned)state->produced,
+        (unsigned)log_store_info()->count, (unsigned)state->done, (unsigned)stalled);
+    ESP_LOGI("LOGGER_DIAG", "entries=%u stage=%u tick=%u elapsed=%u ticks_per_s=%u magic=%08x stop=%u",
+        (unsigned)ULP_DEBUG(entries), (unsigned)ULP_DEBUG(stage), (unsigned)ULP_DEBUG(tick),
+        (unsigned)ULP_DEBUG(elapsed), (unsigned)state->ticks_per_s, (unsigned)state->magic, (unsigned)state->stop);
+    ESP_LOGI("LOGGER_DIAG", "accel_ok=%u temp_valid=%u flags=%04x ready=%u/%u count=%u/%u dropped=%u trap=%u timer=%u",
+        (unsigned)ULP_DEBUG(accel_ok), (unsigned)ULP_DEBUG(temp_valid), (unsigned)ULP_DEBUG(flags),
+        (unsigned)state->ready[0], (unsigned)state->ready[1], (unsigned)state->count[0], (unsigned)state->count[1],
+        (unsigned)state->dropped, !!(REG_READ(RTC_CNTL_INT_RAW_REG) & RTC_CNTL_COCPU_TRAP_INT_RAW),
+        !!(REG_READ(RTC_CNTL_ULP_CP_TIMER_REG) & RTC_CNTL_ULP_CP_SLP_TIMER_EN));
+#else
+    (void)phase;
+#endif
+}
 static void missing_record(unsigned index)
 {
     log_record_t r = {.index = index, .end_s = index + 1,
@@ -92,7 +115,9 @@ static void start_acquisition(void)
     ESP_ERROR_CHECK(ulp_riscv_run());
     /* Permit initial setup to finish before the independent timer is armed. */
     for (unsigned i = 0; i < 100 && !state->initialized; ++i) vTaskDelay(pdMS_TO_TICKS(10));
-    ESP_LOGI("LOGGER", "RF off: 1800 x 1s records, TH1=0x%02x TH2=0x%02x", addresses[0], addresses[1]);
+    ESP_LOGI("LOGGER", "RF off: %u x 1s records (%u s), TH1=0x%02x TH2=0x%02x",
+             (unsigned)LOG_CAPACITY, (unsigned)LOG_DURATION_S, addresses[0], addresses[1]);
+    log_diagnostics("start");
 }
 void app_main(void)
 {
@@ -104,17 +129,27 @@ void app_main(void)
         /* Do not erase NVS on an init error: addresses/calibration belong to the user. */
         ESP_ERROR_CHECK(nvs_flash_init());
         if (log_store_complete()) {
+#if CONFIG_INGPS_LOGGER_DIAGNOSTICS
+            ESP_LOGI("LOGGER_DIAG", "Saved batch found; use PC --next-batch to start a new diagnostic acquisition");
+#endif
             ulp_riscv_timer_stop(); ulp_riscv_halt();
             logger_ble_run(); return;
         }
         start_acquisition();
     }
     drain();
+    log_diagnostics("after-drain");
     if (!state->done && state->progress == last_progress && state->initialized && resumed) stalled = 1;
     last_progress = state->progress;
-    if (stalled) stop_ulp();
+    if (stalled) {
+#if CONFIG_INGPS_LOGGER_DIAGNOSTICS
+        ESP_LOGW("LOGGER_DIAG", "Stopping ULP: no progress or invalid bank; inspect preceding snapshot");
+#endif
+        stop_ulp();
+    }
     if (state->done || esp_rtc_get_time_us() >= deadline) {
         stop_ulp(); drain();
+        log_diagnostics("before-fill");
         while (log_store_info()->count < LOG_CAPACITY) missing_record(log_store_info()->count);
         ESP_ERROR_CHECK(log_store_finish());
         retained_magic = 0;

@@ -39,7 +39,7 @@ async def run(args):
         from bleak import BleakClient, BleakScanner
     except ImportError as e:
         raise RuntimeError('Install dependencies: python -m pip install -r requirements.txt') from e
-    print('Scanning; the sensor becomes visible only after the 30-minute collection.')
+    print('Scanning; the sensor becomes visible only after its configured collection period.')
     found = await BleakScanner.discover(timeout=args.scan_seconds, return_adv=True)
     matches = []
     for dev, adv in found.values():
@@ -63,7 +63,7 @@ async def run(args):
         stem = args.out / f'ingps_{chosen.address.replace(":", "").replace("-", "")}_{info.session:08x}'
         partial = stem.with_suffix('.partial.json')
         restore(partial, batch)
-        print(f'Session {info.session:08x}, already saved {len(batch.records)}/{info.count}')
+        print(f'Session {info.session:08x}, duration {info.duration_s}s, already saved {len(batch.records)}/{info.count}')
         try:
             if args.stream and len(batch.records) < info.count:
                 changed = asyncio.Event()
@@ -92,7 +92,7 @@ async def run(args):
             for i in range(info.count):
                 if i in batch.records:
                     continue
-                await client.write_gatt_char(CONTROL_UUID, select(i), response=True)
+                await client.write_gatt_char(CONTROL_UUID, select(i, info.count), response=True)
                 raw = bytes(await client.read_gatt_char(DATA_UUID))
                 actual = batch.ingest(raw)
                 if actual != i:
@@ -106,7 +106,7 @@ async def run(args):
         atomic_write(stem.with_suffix('.bin'), raw)
         csv_path = stem.with_suffix('.csv')
         csv_tmp = csv_path.with_suffix('.csv.tmp')
-        rows = [decode_record(batch.records[i]) for i in range(info.count)]
+        rows = [decode_record(batch.records[i], info.count) for i in range(info.count)]
         with csv_tmp.open('w', encoding='utf-8-sig', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0]))
             writer.writeheader()
@@ -124,7 +124,7 @@ async def run(args):
         if not args.keep_awake:
             try:
                 await client.write_gatt_char(CONTROL_UUID, finish_command(info, args.next_batch), response=True)
-                print('Next 30-minute acquisition requested.' if args.next_batch else 'BLE shutdown requested; flash retained.')
+                print(f'Next {info.duration_s}-second acquisition requested.' if args.next_batch else 'BLE shutdown requested; flash retained.')
             except Exception as e:
                 raise RuntimeError(f'Files saved and verified, but shutdown/start acknowledgement failed: {e}') from e
 
@@ -137,7 +137,7 @@ def main():
     parser.add_argument('--stream', action='store_true', help='Use indications, then repair missing indices')
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument('--keep-awake', action='store_true', help='Keep BLE available after verified download')
-    actions.add_argument('--next-batch', action='store_true', help='After saving, erase batch and start another 30 minutes')
+    actions.add_argument('--next-batch', action='store_true', help='After saving, erase batch and start another configured collection period')
     args = parser.parse_args()
     if args.scan_seconds <= 0:
         parser.error('--scan-seconds must be positive')

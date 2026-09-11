@@ -27,8 +27,9 @@ class Info:
         if len(raw) != INFO.size:
             raise ValueError(f'Info length {len(raw)}, expected 20')
         value = cls(*INFO.unpack(raw))
-        if (value.magic, value.version, value.record_size, value.count,
-                value.interval_s, value.duration_s) != (0x314c4749, 1, 20, 1800, 1, 1800):
+        if ((value.magic, value.version, value.record_size, value.interval_s) !=
+                (0x314c4749, 1, 20, 1) or not 300 <= value.duration_s <= 1800 or
+                value.count != value.duration_s):
             raise ValueError(f'Unsupported logger format: {value}')
         return value
 
@@ -73,9 +74,9 @@ class Batch:
             raise ValueError('Whole batch CRC32 mismatch')
         return raw
 
-def select(index):
-    if not 0 <= index < 1800:
-        raise ValueError('Index outside 0..1799')
+def select(index, count=1800):
+    if not 0 <= index < count <= 1800:
+        raise ValueError(f'Index outside batch of {count} records')
     return struct.pack('<BH', 2, index)
 
 def finish_command(info, next_batch=False):

@@ -8,3 +8,9 @@
 - PC 도구 정본은 저장소 `tools/pc_logger/`, 실행 사본은 사용자 홈의 `ingps_ble_logger/`로 제공.
 
 원래 2026-09-06 아키텍처 문서는 원본으로 보존했다. 기존 README 본문의 13 B/SHF 등 legacy 설명 드리프트는 이 작업의 직접 GATT 계약과 구분하며 수정하지 않았다. STM32/서버/Android 문서는 변경하지 않았다.
+
+후속 5분 검증 설정: README/LOGGER_README/PC 및 ULP 테스트 README에 현재 300초 설정과 1800초 복원을 반영했다. PC 실행 사본도 동기화했다. 상세 검증은 `logger_5min_validation.md`에 있다.
+
+센싱 누락 진단: `LOGGER_README.md`와 `logger_missing_diagnosis.md`에 전체 MISSING 관측, 첫 30초 진단 로그, 저장된 회차가 있을 때 NEXT 사용, 진단 설정 해제 방법을 기록했다. 후속 stage 8/trap=1 실물 로그와 ELF의 FENCE 위치가 일치하여 원인 및 수정/재발 방지 검사를 추가 기록했다. 수정 후 실물 정상 수집은 아직 미검증이다.
+
+후속 ESP-IDF 기본 빌드 오류 대응: 루트 sdkconfig도 logger 필수값에 동기화했고, `LOGGER_README.md`에 일반 빌드와 전용 빌드의 구분/복구 절차를 추가했다. 상세 근거는 `logger_default_build_fix.md`에 있다.

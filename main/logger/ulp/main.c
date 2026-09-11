@@ -12,10 +12,24 @@ static uint64_t squares[3];
 static int16_t temperatures[2] = {LOG_INVALID_TEMP, LOG_INVALID_TEMP};
 static uint32_t temp_valid, accel_ok;
 
+#if CONFIG_INGPS_LOGGER_DIAGNOSTICS
+/* Independent debug symbols: not part of the sensor wire format.
+   Snapshots are observational, not an atomic cross-core transaction. */
+volatile uint32_t debug_entries, debug_stage, debug_tick, debug_elapsed;
+volatile uint32_t debug_accel_ok, debug_temp_valid, debug_flags;
+#define TRACE(stage) (debug_stage = (stage))
+#else
+#define TRACE(stage) ((void)0)
+#endif
+
 static void publish(void)
 {
 #ifndef INGPS_LOGGER_HOST_TEST
-    __asm__ volatile("fence rw,rw" ::: "memory");
+    /* S3 ULP traps on the FENCE emitted here (stage 8, init=0).
+       RTC shared accesses are volatile, as in IDF's ULP lock implementation.
+       Keep compiler ordering without emitting a hardware FENCE instruction.
+       HP-side Xtensa memw and ready-bank ownership remain in place. */
+    __asm__ volatile("" ::: "memory");
 #endif
 }
 static uint32_t ticks(void)
@@ -95,23 +109,38 @@ static void clear_window(void)
 }
 int main(void)
 {
+#if CONFIG_INGPS_LOGGER_DIAGNOSTICS
+    ++debug_entries;
+#endif
+    TRACE(1);
     if (shared.stop || shared.done || shared.magic != LOG_MAGIC || !shared.ticks_per_s)
         return 0;
+    TRACE(2);
     soft_i2c_init();
     if (!shared.initialized) {
+        TRACE(3);
         soft_i2c_recover();
+        TRACE(4);
         accel_ok = setup_accel();
         for (unsigned ch = 0; ch < 2; ++ch) {
+            TRACE(5 + ch);
             if (!setup_temp(ch)) retry[ch] = 60;
         }
         if (!accel_ok) retry[2] = 60;
+        TRACE(7);
         started = last_run = ticks();
+        TRACE(8);
         publish(); shared.initialized = 1;
     }
+    TRACE(9);
     uint32_t now = ticks(), elapsed = (now - started) / shared.ticks_per_s;
+#if CONFIG_INGPS_LOGGER_DIAGNOSTICS
+    debug_tick = now; debug_elapsed = elapsed;
+#endif
     if (now - last_run > shared.ticks_per_s / 4) flags |= LOG_TIMING_GAP;
     last_run = now;
 
+    TRACE(10);
     if (!accel_ok && elapsed >= retry[2]) {
         soft_i2c_recover(); accel_ok = setup_accel(); retry[2] = elapsed + 60;
     }
@@ -139,6 +168,7 @@ int main(void)
         flags |= LOG_ACCEL_ERROR | LOG_I2C_ERROR;
         if (accel_ok) { accel_ok = 0; retry[2] = elapsed + 60; }
     }
+    TRACE(11);
     if (elapsed >= next_temp) {
         next_temp = elapsed + 1; temp_valid = 0;
         for (unsigned ch = 0; ch < 2; ++ch) {
@@ -158,18 +188,26 @@ int main(void)
     }
     /* Drain first so the final FIFO is included too. Windows are quantized to
        drain boundaries (not exact sample timestamps); retain the actual count. */
+    TRACE(12);
     elapsed = (ticks() - started) / shared.ticks_per_s;
+#if CONFIG_INGPS_LOGGER_DIAGNOSTICS
+    debug_elapsed = elapsed; debug_accel_ok = accel_ok;
+    debug_temp_valid = temp_valid; debug_flags = flags;
+#endif
     while (next_end <= elapsed && next_end <= LOG_DURATION_S) {
         bool missing = next_end < elapsed;
         append(missing);
         if (!missing) clear_window();
     }
     if (next_end > LOG_DURATION_S) {
+        TRACE(13);
         /* Standby is best effort; stored sensor flags describe acquisition. */
         (void)write8(0x2d, 0);
         publish(); shared.done = 1;
         ulp_riscv_wakeup_main_processor();
     }
+    TRACE(14);
     publish(); shared.progress++;
+    TRACE(15);
     return 0; /* halt; timer period starts after work finishes */
 }

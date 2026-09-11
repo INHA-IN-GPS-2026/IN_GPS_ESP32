@@ -55,6 +55,17 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'CRC32'):
             batch.verified_bytes()
 
+    def test_duration_metadata_and_five_minute_boundary(self):
+        info = Info.parse(INFO.pack(0x314c4749, 1, 20, 300, 1, 300, 42, 0))
+        batch = Batch(info)
+        self.assertEqual(batch.ingest(record(299)), 299)
+        with self.assertRaises(ValueError): batch.ingest(record(300))
+        with self.assertRaises(ValueError): select(300, info.count)
+        for count, interval, duration in ((1800, 1, 300), (300, 2, 300), (0, 1, 0), (1801, 1, 1801)):
+            with self.subTest(count=count, interval=interval, duration=duration):
+                with self.assertRaises(ValueError):
+                    Info.parse(INFO.pack(0x314c4749, 1, 20, count, interval, duration, 42, 0))
+
     def test_metadata_and_commands(self):
         info = Info.parse(INFO.pack(0x314c4749, 1, 20, 1800, 1, 1800, 0x12345678, 0x87654321))
         self.assertEqual(select(1799), b'\x02\x07\x07')

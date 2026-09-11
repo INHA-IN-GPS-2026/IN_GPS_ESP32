@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 #define INGPS_LOGGER_HOST_TEST 1
+#ifndef CONFIG_INGPS_LOGGER_DURATION_S
+#define CONFIG_INGPS_LOGGER_DURATION_S 1800
+#endif
 #define main ulp_entry
 #include "../../main/logger/ulp/main.c"
 #undef main
@@ -65,21 +68,26 @@ int main(int argc, char **argv)
     fake_tick = read_time = base_tick;
     shared.magic = LOG_MAGIC; shared.ticks_per_s = 1000;
     shared.th_addr[0] = 0x48; shared.th_addr[1] = 0x49;
-    for (uint32_t ms = 0; ms <= 1800000; ms += 200) {
+    for (uint32_t ms = 0; ms <= LOG_DURATION_S * 1000; ms += 200) {
         if (!strcmp(mode, "gap") && ms > 1000 && ms < 5000) continue;
         fake_tick = base_tick + ms;
-        test_fault = !strcmp(mode, "fault") && ms >= 5000 && ms < 10000;
+        test_fault = !strcmp(mode, "all_fault") ||
+            (!strcmp(mode, "fault") && ms >= 5000 && ms < 10000);
         full_fifo = !strcmp(mode, "full") && ms >= 5000 && ms < 6000;
         assert(ulp_entry() == 0);
         if (!strcmp(mode, "backpressure") && ms < 65000) continue;
         consume();
     }
-    assert(shared.done && shared.produced == 1800);
+    assert(shared.done && shared.produced == LOG_CAPACITY);
+#if CONFIG_INGPS_LOGGER_DIAGNOSTICS
+    assert(debug_entries > LOG_CAPACITY);
+    assert(debug_stage == 15 && debug_elapsed == LOG_DURATION_S);
+#endif
     if (!strcmp(mode, "backpressure")) {
-        assert(shared.dropped >= 5 && received_count + shared.dropped == 1800);
+        assert(shared.dropped >= 5 && received_count + shared.dropped == LOG_CAPACITY);
         assert(received[0].index == 0 && received[29].index == 29);
     } else {
-        assert(received_count == 1800);
+        assert(received_count == LOG_CAPACITY);
         for (unsigned i = 0; i < received_count; ++i) assert(received[i].index == i);
     }
     if (!strcmp(mode, "baseline") || !strcmp(mode, "wrap")) {
@@ -88,6 +96,13 @@ int main(int argc, char **argv)
             assert(received[i].th1_x100 == -50 && received[i].th2_x100 == 2500);
             assert(received[i].flags == 7);
             assert(received[i].rms_mg[0] == 1000 && received[i].rms_mg[1] == 500 && received[i].rms_mg[2] == 0);
+        }
+    } else if (!strcmp(mode, "all_fault")) {
+        for (unsigned i = 0; i < received_count; ++i) {
+            assert(received[i].samples == 0);
+            assert(received[i].flags & LOG_I2C_ERROR);
+            assert(received[i].flags & LOG_ACCEL_ERROR);
+            assert(!(received[i].flags & (LOG_MISSING | LOG_RMS_VALID)));
         }
     } else if (!strcmp(mode, "gap")) {
         assert(received[1].flags & LOG_MISSING);

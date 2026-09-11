@@ -1,12 +1,16 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#ifndef INGPS_LOGGER_HOST_TEST
+#include "sdkconfig.h"
+#endif
 
 #define LOG_MAGIC 0x314c4749u /* IGL1 */
 #define LOG_VERSION 1
 #define LOG_INTERVAL_S 1u
-#define LOG_DURATION_S 1800u
+#define LOG_DURATION_S (CONFIG_INGPS_LOGGER_DURATION_S * 1u)
 #define LOG_CAPACITY (LOG_DURATION_S / LOG_INTERVAL_S)
+_Static_assert(LOG_DURATION_S >= 300 && LOG_DURATION_S <= 1800, "supported batch duration");
 #define LOG_BANK_RECORDS 30u
 #define LOG_INVALID_TEMP INT16_MIN
 enum {

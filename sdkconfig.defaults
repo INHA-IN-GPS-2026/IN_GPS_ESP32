@@ -1,5 +1,5 @@
 # Permanent defaults. Logger uses an isolated generated sdkconfig.
-# Existing tracked sdkconfig is preserved as the legacy configuration.
+# Root sdkconfig must also use the required logger values for ordinary IDF builds.
 CONFIG_IDF_TARGET="esp32s3"
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
@@ -65,12 +65,16 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 
 # Direct GATT batch logger.
 CONFIG_INGPS_BATCH_LOGGER=y
+# Thirty-minute acquisition; use 300 for a short validation run.
+CONFIG_INGPS_LOGGER_DURATION_S=1800
+CONFIG_INGPS_LOGGER_DIAGNOSTICS=y
 CONFIG_ULP_COPROC_ENABLED=y
 CONFIG_ULP_COPROC_TYPE_RISCV=y
 CONFIG_ULP_COPROC_RESERVE_MEM=7168
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_GATT_SERVER=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n

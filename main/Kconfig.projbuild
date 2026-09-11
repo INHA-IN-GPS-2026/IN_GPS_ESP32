@@ -1,8 +1,23 @@
 menu "IN-GPS logger"
 config INGPS_BATCH_LOGGER
-    bool "ULP 30-minute direct BLE logger"
+    bool "ULP direct BLE batch logger"
     default y
     help
         Dedicated batch acquisition, 1 Hz records, ULP sensors and flash storage.
         Disable to build the legacy gateway advertising application.
+config INGPS_LOGGER_DURATION_S
+    int "Batch collection duration (seconds)"
+    depends on INGPS_BATCH_LOGGER
+    range 300 1800
+    default 1800
+    help
+        Use 300 for a five-minute validation run, then 1800 for thirty minutes.
+        Sampling remains one record per second; Bluetooth starts after collection.
+config INGPS_LOGGER_DIAGNOSTICS
+    bool "Log ULP acquisition diagnostics on main CPU wakes"
+    depends on INGPS_BATCH_LOGGER
+    default n
+    help
+        Temporary observability for missing records. Adds ULP stage/counter
+        snapshots and serial logs. Disable before measuring power consumption.
 endmenu

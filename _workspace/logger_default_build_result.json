@@ -1,0 +1,12 @@
+{
+  "command": "idf.py build",
+  "sdkconfig": "sdkconfig",
+  "build_directory": "build",
+  "app_bytes": 545200,
+  "app_sha256": "6c111424c6b01785618086533b72ac57ff5d2b27d340518bc01d968614501165",
+  "ulp_allocated_bytes": 5580,
+  "ulp_reserved_bytes": 7168,
+  "ulp_stack_headroom_bytes": 1588,
+  "partition": "logger at 0x110000, size 64 KiB",
+  "result": "PASS"
+}

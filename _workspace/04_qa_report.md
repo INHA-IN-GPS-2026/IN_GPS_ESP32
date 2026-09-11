@@ -2,6 +2,8 @@
 
 검증일: 2026-09-11. 기반 `81d0551`, 새 브랜치 `feature/ulp-30min-ble-logger`, 미커밋 작업 트리 기준.
 
+> 후속 기본 `build/` 설정 오류와 수정은 [logger_default_build_fix.md](logger_default_build_fix.md)에 기록한다. 아래 최초 빌드 통과는 `build-logger/` 범위였으며, 루트 sdkconfig는 후속 작업에서 logger 필수값으로 동기화했다.
+
 ## 통과
 
 | 항목 | 생산자/소비자 또는 실행 근거 |
@@ -34,3 +36,9 @@
 - UART/USB 분리 후 수집/Flash wake/연결대기/다운로드 각각의 전류와 배터리·Supercap 전압창 비교.
 - 기존 gateway/MQTT/DB/API/Android의 전체 계약 검증은 수행하지 않았다. 신규 경로에 참여하지 않으며 해당 파일을 변경하지 않았다.
 - commit/push/배포/실물 플래시는 수행하지 않았다.
+
+후속 5분 검증 설정: 현재 수집 기간은 300초다. 5분 ESP-IDF 빌드, ULP 5분/30분 호스트 테스트 12회, PC 테스트 11개가 통과했다. 상세 변경과 실물 확인/30분 복원 절차는 `logger_5min_validation.md`를 따른다.
+
+후속 실물 데이터 확인: 다운로드 3회차(1800/300/300개)의 CRC는 통과했으나 모든 기록이 samples=0, flags=0x0120으로 센싱은 실패했다. 실물 정상 수집으로 판정할 수 없다. 실행 원인 구분을 위한 진단 빌드와 관측 근거는 `logger_missing_diagnosis.md`를 따른다.
+
+후속 stage 8 trap: 사용자 진단 로그와 실제 ELF에서 초기 publication의 FENCE 위치가 일치했다. ULP FENCE를 compiler barrier로 교체하고 ELF 명령 검사를 빌드에 추가했다. 수정 전 ELF가 검사에서 실패하는 것을 확인했다. 수정 후 실물 센싱/절전 경계 검증은 사용자 재플래시 후 수행한다.

@@ -17,9 +17,9 @@ from protocol import INFO, INFO_UUID, DATA_UUID, SERVICE_UUID
 from test_protocol import record
 
 class DownloadTests(unittest.TestCase):
-    def make_peer(self, root, fail_after=None):
-        data = [record(i) for i in range(1800)]
-        wire_info = INFO.pack(0x314c4749,1,20,1800,1,1800,42,zlib.crc32(b''.join(data)))
+    def make_peer(self, root, fail_after=None, count=1800):
+        data = [record(i) for i in range(count)]
+        wire_info = INFO.pack(0x314c4749,1,20,count,1,count,42,zlib.crc32(b''.join(data)))
         state = {'reads': 0, 'actions': [], 'fail_after': fail_after}
         dev = types.SimpleNamespace(address='AA:BB:CC:DD:EE:FF', name='IN_GPS_LOG_TEST')
         adv = types.SimpleNamespace(service_uuids=[SERVICE_UUID], local_name=dev.name, rssi=-50)
@@ -68,6 +68,18 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(state['reads'], 1766)
             self.assertEqual(state['actions'][0][0], 3)
             self.assertEqual(len(next(root.glob('*.csv')).read_text(encoding='utf-8-sig').splitlines()), 1801)
+
+    def test_five_minute_download_and_next_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            module, args, state, _ = self.make_peer(root, count=300)
+            args.next_batch = True
+            with patch.dict(sys.modules, bleak=module), contextlib.redirect_stdout(io.StringIO()):
+                asyncio.run(download.run(args))
+            self.assertEqual(state['reads'], 300)
+            self.assertEqual(state['actions'][0][0], 4)
+            self.assertEqual(len(next(root.glob('*.bin')).read_bytes()), 6000)
+            self.assertEqual(len(next(root.glob('*.csv')).read_text(encoding='utf-8-sig').splitlines()), 301)
 
     def test_corruption_never_acknowledged(self):
         with tempfile.TemporaryDirectory() as directory:

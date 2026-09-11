@@ -22,3 +22,7 @@ build-logger\test_ulp.exe full
 - full: FIFO full이면 정상 RMS valid로 표시하지 않음.
 
 PC 테스트: `python -m unittest discover -s tools/pc_logger -p "test_*.py" -v`.
+
+센싱 누락 진단: `/DCONFIG_INGPS_LOGGER_DIAGNOSTICS=1`로 빌드하면 정상 완료 시 진단 stage/elapsed도 검증한다. `all_fault` 시나리오는 모든 센서가 계속 응답하지 않아도 I2C/가속도 오류 기록이 생성되며 전체 MISSING으로 변하지 않는지 확인한다.
+
+5분 경계도 검증하려면 cl 명령에 `/DCONFIG_INGPS_LOGGER_DURATION_S=300`을 추가한다. 생략 시 호스트 테스트는 1800초를 사용한다. 두 설정 모두 같은 6개 시나리오를 실행한다.
