@@ -1,5 +1,8 @@
 # ESP-IDF build output
 build/
+build-logger/
+build-logger-output.txt
+tools/pc_logger/downloads/
 sdkconfig.old
 sdkconfig.bak
 build_log.txt

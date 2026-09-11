@@ -1,0 +1,4 @@
+#pragma once
+#define RTC_CNTL_TIME_UPDATE_REG 0
+#define RTC_CNTL_TIME_UPDATE 0
+#define RTC_CNTL_TIME0_REG 0

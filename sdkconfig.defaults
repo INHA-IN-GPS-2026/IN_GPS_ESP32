@@ -1,14 +1,5 @@
-# digitalVer — NEW SMART MODULE rev 4.0 (Docs/Schemetic/I2C_final_ver.pdf) 기준.
-#
-# ★이 파일은 "새 체크아웃/CI에서 처음 빌드할 때의 기준값"일 뿐이다.
-#  실제 설정의 단일 출처는 저장소에 커밋된 sdkconfig다 — 1200줄 넘는 누적
-#  튜닝(패닉 핸들러, INT/RTC WDT 타임아웃, FreeRTOS HZ, NimBLE 구성 등)이
-#  거기에만 있고 이 파일로는 재현되지 않는다.
-#
-#  ⚠ sdkconfig를 지우고 재생성하지 말 것. CONFIG_IDF_TARGET도 거기에만 있어서
-#    지우면 타깃이 기본값(esp32)으로 떨어지고, adc_cali_curve_fitting(S3 전용)과
-#    esp_bt.h가 통째로 안 잡힌다. 설정을 바꿀 때는 menuconfig를 쓰거나
-#    sdkconfig를 직접 고치고, 그 변경을 이 파일에도 반영해 둘 것.
+# Permanent defaults. Logger uses an isolated generated sdkconfig.
+# Existing tracked sdkconfig is preserved as the legacy configuration.
 CONFIG_IDF_TARGET="esp32s3"
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
@@ -71,3 +62,26 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 #  app_main.c의 INGPS_PM_DEBUG를 1로 둘 것(15초마다 실적+락 목록 출력).
 #  2026-08-03 실측: 이 방법으로 light sleep 점유율 92~94% 확인 완료.
 # CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y
+
+# Direct GATT batch logger.
+CONFIG_INGPS_BATCH_LOGGER=y
+CONFIG_ULP_COPROC_ENABLED=y
+CONFIG_ULP_COPROC_TYPE_RISCV=y
+CONFIG_ULP_COPROC_RESERVE_MEM=7168
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_GATT_CLIENT=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=23
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_logger.csv"
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=8
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y

@@ -1,0 +1,8 @@
+menu "IN-GPS logger"
+config INGPS_BATCH_LOGGER
+    bool "ULP 30-minute direct BLE logger"
+    default y
+    help
+        Dedicated batch acquisition, 1 Hz records, ULP sensors and flash storage.
+        Disable to build the legacy gateway advertising application.
+endmenu

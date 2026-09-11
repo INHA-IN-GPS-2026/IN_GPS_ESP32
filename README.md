@@ -1,5 +1,7 @@
 # IN-GPS (Firmware, ESP32-S3) — rev 4.0
 
+> **현재 브랜치 `feature/ulp-30min-ble-logger`**: 30분 동안 무선 없이 1초 기록 1,800개를 수집하고 nRF Connect/PC에 직접 BLE GATT로 전송합니다. ULP + RTC 이중 버퍼 + 전용 Flash 저장, 빌드/사용법은 [LOGGER_README.md](LOGGER_README.md)를 참조하세요. 아래 rev 4.0 설명은 보존된 기존 게이트웨이 광고 애플리케이션(`CONFIG_INGPS_BATCH_LOGGER=n`)에 관한 내용입니다.
+
 산업 설비의 온도·진동을 상시 감시해 화재를 예방하는 IN-GPS 시스템의 센서 노드 펌웨어입니다. AS6221(I2C 디지털 온도) 2채널과 ADXL345(I2C 가속도) 3축을 읽어 BLE Manufacturer Specific Data로 광고하고, STM32 Gateway가 스캔해 MQTT로 서버에 전달합니다.
 
 > **rev 4.0에서 아날로그 경로(ULP + NTC 서미스터 + ADXL335)가 전량 폐기되고 단일 I2C 버스(AS6221 + ADXL345) 로 대체되었습니다.** ULP RISC-V 코어, `ulp/` 디렉터리, ADC 캘리브레이션 기반 온도 변환은 더 이상 사용하지 않습니다(과거 아날로그 버전은 `Analog_1.0.0_ver` 브랜치 참조).

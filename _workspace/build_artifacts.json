@@ -1,0 +1,23 @@
+{
+  "branch": "feature/ulp-30min-ble-logger",
+  "base_commit": "81d0551",
+  "idf": "5.5.2",
+  "files": {
+    "build-logger/in_gps_project.bin": {
+      "bytes": 535392,
+      "sha256": "ff6ff32496af9d3747142bd5c2e2d0727b5b62194351ef4b93ae992158914142"
+    },
+    "build-logger/bootloader/bootloader.bin": {
+      "bytes": 21104,
+      "sha256": "7c8e84cc99c80471160c08dbc2052742fca5761ee8898988284b3d6e26179345"
+    },
+    "build-logger/partition_table/partition-table.bin": {
+      "bytes": 3072,
+      "sha256": "36b77a93f3d6ef73d4ffac9c098b14f61f3970a11f4204b12ecedd70f2440a4d"
+    },
+    "build-logger/esp-idf/main/ulp_logger/ulp_logger.elf": {
+      "bytes": 22684,
+      "sha256": "93c7a1ab3e8c12ace8b7904678108ea9e671898bd07e248ec7bb554fe08c11c4"
+    }
+  }
+}
