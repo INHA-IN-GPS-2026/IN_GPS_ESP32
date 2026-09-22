@@ -6,6 +6,7 @@
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
+#include "esp_pm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -157,6 +158,12 @@ static void host(void *arg)
 void logger_ble_run(void)
 {
     ESP_LOGI("LOGGER", "Batch ready: %u records; starting direct GATT", log_store_info()->count);
+    esp_pm_config_t pm = {
+        .max_freq_mhz = 80,
+        .min_freq_mhz = 40,
+        .light_sleep_enable = true,
+    };
+    ESP_ERROR_CHECK(esp_pm_configure(&pm));
     action_queue = xQueueCreate(1, sizeof(uint8_t));
     ESP_ERROR_CHECK(action_queue ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(nimble_port_init());
