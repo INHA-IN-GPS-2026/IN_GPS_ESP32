@@ -21,6 +21,11 @@ import time
 
 import serial
 from esptool.cmds import attach_flash, detect_chip, run_stub, write_flash
+from esptool.loader import ESPLoader
+
+# 포트를 열어둔 채 넘기면 esptool이 VID/PID 조회에 실패해 매번 경고를 찍는다.
+# 결과는 어차피 '표준 리셋'(Connector PCB DTR/RTS 회로에 맞는 방식)이므로 조회를 생략.
+ESPLoader.get_usb_vid_pid = lambda self: (None, None)
 
 SECTOR = 4096
 
@@ -33,7 +38,16 @@ def set_lines(port: serial.Serial, dtr: bool, rts: bool) -> None:
 
 
 def hold_reset(port: serial.Serial) -> None:
-    # esptool ClassicReset의 리셋 구간과 동일: IO0=HIGH, EN=LOW → 칩 정지, 소모전류 최소
+    """esptool ClassicReset의 리셋 구간과 동일: IO0=HIGH, EN=LOW → 칩 정지, 소모전류 최소.
+
+    esptool은 접속 실패 시 포트를 닫아버린다. 닫힌 상태에서는 DTR/RTS가 풀려
+    칩이 부팅(→ 미완성 펌웨어면 부팅 반복)하면서 C6를 소모하므로, 즉시 다시 연다.
+    """
+    if not port.is_open:
+        port.dtr = False
+        port.rts = True       # 열리는 순간부터 리셋 유지
+        port.baudrate = 115200
+        port.open()
     set_lines(port, dtr=False, rts=True)
 
 
@@ -71,8 +85,11 @@ def main() -> None:
     ap.add_argument("--build", default="build", help="ESP-IDF build 폴더 (기본: ./build)")
     ap.add_argument("--app-only", action="store_true", help="앱 파티션만 쓰기")
     ap.add_argument("--chunk-kb", type=int, default=64, help="조각 크기 KB (4의 배수)")
-    ap.add_argument("--rest", type=float, default=3.0, help="조각 사이 리셋 유지(초)")
-    ap.add_argument("--precharge", type=float, default=5.0, help="시작 전 리셋 유지(초)")
+    ap.add_argument("--rest", type=float, default=5.0, help="조각 사이 리셋 유지(초)")
+    ap.add_argument("--retries", type=int, default=4, help="조각당 재시도 횟수")
+    ap.add_argument("--recover", type=float, default=15.0,
+                    help="실패 후 재시도 전 리셋 유지(초) — C6 회복용")
+    ap.add_argument("--precharge", type=float, default=15.0, help="시작 전 리셋 유지(초)")
     ap.add_argument("pairs", nargs="*", help="직접 지정 시: addr file [addr file ...]")
     a = ap.parse_args()
 
@@ -102,15 +119,26 @@ def main() -> None:
         time.sleep(a.precharge)
 
         for n, (addr, blob, name) in enumerate(jobs, 1):
-            print(f"\n[{n}/{len(jobs)}] {name} @ {hex(addr)} ({len(blob)} B)")
-            port.baudrate = 115200
-            esp = detect_chip(port, baud=115200, connect_mode="default-reset")
-            esp = run_stub(esp)
-            if a.baud != 115200:
-                esp.change_baud(a.baud)
-            attach_flash(esp)
-            write_flash(esp, [(addr, blob)],
-                        flash_mode="keep", flash_freq="keep", flash_size="keep")
+            for attempt in range(1, a.retries + 2):
+                tag = "" if attempt == 1 else f" (재시도 {attempt - 1}/{a.retries})"
+                print(f"\n[{n}/{len(jobs)}] {name} @ {hex(addr)} ({len(blob)} B){tag}")
+                try:
+                    hold_reset(port)                 # 포트가 닫혀 있으면 다시 열기
+                    port.baudrate = 115200
+                    esp = detect_chip(port, baud=115200, connect_mode="default-reset")
+                    esp = run_stub(esp)
+                    if a.baud != 115200:
+                        esp.change_baud(a.baud)
+                    attach_flash(esp)
+                    write_flash(esp, [(addr, blob)],
+                                flash_mode="keep", flash_freq="keep", flash_size="keep")
+                    break
+                except Exception as e:
+                    hold_reset(port)
+                    if attempt > a.retries:
+                        raise
+                    print(f"  ! 조각 실패({e.__class__.__name__}) — {a.recover:.0f}s 리셋 유지 후 재시도")
+                    time.sleep(a.recover)
             hold_reset(port)                     # 다음 조각 전까지 칩 정지 + C6 재충전
             if n < len(jobs):
                 time.sleep(a.rest)
@@ -119,8 +147,11 @@ def main() -> None:
         set_lines(port, dtr=False, rts=False)    # 리셋 해제 → 새 펌웨어로 정상 부팅
         print("\n완료 — 정상 부팅")
     except Exception as e:
-        hold_reset(port)
-        print(f"\n실패: {e}\n→ --rest 를 늘리거나 --chunk-kb 를 줄여서 다시 실행")
+        try:
+            hold_reset(port)
+        except Exception:
+            pass
+        print(f"\n실패: {e}\n→ 다시 실행: python tools\\battflash.py -p {a.port} --rest 10 --chunk-kb 32")
         sys.exit(1)
     finally:
         port.close()
